@@ -170,6 +170,8 @@ static int lastlevel(lua_State *L) {
 std::unordered_map<std::string, int> gString2Id;
 std::unordered_map<int, std::string> gId2String;
 
+static const int VALID_MIN_ID = 2;
+
 static const int MAX_STACK_SIZE = 64;
 static const int MAX_CALL_STACK_SIZE = 4;
 static const int MAX_BUCKET_SIZE = 1 << 10;
@@ -319,10 +321,6 @@ static void SignalHandlerHook(lua_State *L, lua_Debug *par) {
         i++;
         last--;
 
-        if (funcname[0] == '?' && funcname[1] == 0) {
-            continue;
-        }
-
         int id = 0;
         auto iter = gString2Id.find(funcname);
         if (iter == gString2Id.end()) {
@@ -332,6 +330,11 @@ static void SignalHandlerHook(lua_State *L, lua_Debug *par) {
         } else {
             id = iter->second;
         }
+		
+		if (id < VALID_MIN_ID)
+		{
+			continue;
+		}
 
         LLOG("%s %d %d", funcname, id, last);
 
@@ -396,6 +399,13 @@ static void SignalHandlerHook(lua_State *L, lua_Debug *par) {
 }
 
 static void SignalHandler(int sig, siginfo_t *sinfo, void *ucontext) {
+	// hack lua5.3.4 linux-x64 为了判断是否不在lua中 L-nny == 0 && L-nCcalls == 0
+	unsigned short nny = *(unsigned short *)((char*)gL+196);
+	unsigned short nCcalls = *(unsigned short *)((char*)gL+198);
+	if (nny == 0 && nCcalls == 0)
+	{
+		return;
+	}
     lua_sethook(gL, SignalHandlerHook, LUA_MASKCOUNT, 1);
 }
 
@@ -406,6 +416,11 @@ static int lrealstart(lua_State *L, int second, const char *file) {
         return -1;
     }
     grunning = 1;
+	
+	gString2Id["?"] = 0;
+	gId2String[0] = "?";
+	gString2Id["function 'xpcall'"] = 1;
+	gId2String[1] = "function 'xpcall'";
 
     const int iter = 100;
 
