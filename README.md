@@ -1,6 +1,6 @@
 # pLua
 Lua 性能分析工具
- 
+
 ## 原理
 类似于gperftools，通过定时器信号回调查看调用栈，来定位调用的热点
 
@@ -11,7 +11,7 @@ Lua 性能分析工具
 - 直观，输出调用图，能直观的看到热点和调用关系
 
 ## 使用
-lua代码添加
+Lua code
 ``` lua
 -- 引入libplua.so
 local p = require "libplua"
