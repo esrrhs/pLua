@@ -35,6 +35,9 @@ p.svg("call.pro", "call.svg")
 ```
 
 ## 编译
+* 安装lua 5.3
+* 安装graphviz
+* 编译pLua
 ``` bash
 $ cmake .
 $ make
