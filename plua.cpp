@@ -170,7 +170,7 @@ static int lastlevel(lua_State *L) {
 std::unordered_map<std::string, int> gString2Id;
 std::unordered_map<int, std::string> gId2String;
 
-static const int VALID_MIN_ID = 2;
+static const int VALID_MIN_ID = 3;
 
 static const int MAX_STACK_SIZE = 64;
 static const int MAX_CALL_STACK_SIZE = 4;
@@ -421,6 +421,8 @@ static int lrealstart(lua_State *L, int second, const char *file) {
 	gId2String[0] = "?";
 	gString2Id["function 'xpcall'"] = 1;
 	gId2String[1] = "function 'xpcall'";
+	gString2Id["function 'pcall'"] = 2;
+	gId2String[2] = "function 'pcall'";
 
     const int iter = 100;
 
