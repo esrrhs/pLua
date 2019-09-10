@@ -399,10 +399,9 @@ static void SignalHandlerHook(lua_State *L, lua_Debug *par) {
 }
 
 static void SignalHandler(int sig, siginfo_t *sinfo, void *ucontext) {
-	// hack lua5.3.4 linux-x64 为了判断是否不在lua中 L-nny == 0 && L-nCcalls == 0
-	unsigned short nny = *(unsigned short *)((char*)gL+196);
+	// hack lua5.3.4 linux-x64 为了判断是否不在lua中 L-nCcalls == 0
 	unsigned short nCcalls = *(unsigned short *)((char*)gL+198);
-	if (nny == 0 && nCcalls == 0)
+	if (nCcalls == 0)
 	{
 		return;
 	}
