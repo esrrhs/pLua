@@ -10,5 +10,6 @@ jobs:
     steps:
     - name: make
       run: |
+        ls
         cmake .
         make
