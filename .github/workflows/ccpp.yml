@@ -12,9 +12,15 @@ jobs:
     - name: prepare
       run: |
         sudo apt-get install *graphviz* -y
-        sudo apt-get install *lua* -y
+    - name: prepare
+      run: |
+        sudo wget https://www.lua.org/ftp/lua-5.3.4.tar.gz
+        sudo tar -xf lua-5.3.4.tar.gz
+        cd lua-5.3.4
+        sudo make linux
+        sudo make install
         
     - name: make
       run: |
-        cmake .
-        make
+        sudo cmake .
+        sudo make
