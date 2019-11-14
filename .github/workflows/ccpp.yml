@@ -12,6 +12,7 @@ jobs:
     - name: prepare
       run: |
         sudo apt-get install *graphviz* -y
+        sudo apt-get install *lua* -y
         
     - name: make
       run: |
