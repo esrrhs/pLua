@@ -9,7 +9,7 @@ jobs:
     
     steps:
     - uses: actions/checkout@v1
-    - name: make
+    - name: prepare
       run: |
         wget https://graphviz.gitlab.io/pub/graphviz/stable/SOURCES/graphviz.tar.gz
         tar -xf graphviz.tar.gz
@@ -17,6 +17,7 @@ jobs:
         ./configure
         make
         make install
-        cd ..
+    - name: make
+      run: |
         cmake .
         make
