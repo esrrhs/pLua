@@ -14,6 +14,7 @@ jobs:
         sudo apt-get install *graphviz* -y
     - name: prepare
       run: |
+        sudo apt-get install libreadline-dev -y
         sudo wget https://www.lua.org/ftp/lua-5.3.4.tar.gz
         sudo tar -xf lua-5.3.4.tar.gz
         cd lua-5.3.4
