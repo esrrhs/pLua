@@ -1,4 +1,9 @@
 # pLua
+
+[<img src="https://img.shields.io/github/license/esrrhs/pLua">](https://github.com/esrrhs/pLua)
+[<img src="https://img.shields.io/github/languages/top/esrrhs/pLua">](https://github.com/esrrhs/pLua)
+[<img src="https://img.shields.io/github/workflow/status/esrrhs/pLua/CI">](https://github.com/esrrhs/pLua/actions)
+
 Lua 性能分析工具
 
 ## 原理
