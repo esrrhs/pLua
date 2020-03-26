@@ -788,7 +788,11 @@ static int lsvg(lua_State *L) {
 }
 #endif
 
+#ifdef WITH_GRAPHVIZ
+extern "C" int luaopen_libpluag(lua_State *L) {
+#else
 extern "C" int luaopen_libplua(lua_State *L) {
+#endif
     luaL_checkversion(L);
     luaL_Reg l[] = {
             {"start", lstart},
