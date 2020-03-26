@@ -27,7 +27,9 @@
 #include <vector>
 #include <unordered_set>
 #include <set>
+#ifdef WITH_GRAPHVIZ
 #include <graphviz/gvc.h>
+#endif
 
 extern "C" {
 #include "lua.h"
@@ -399,12 +401,6 @@ static void SignalHandlerHook(lua_State *L, lua_Debug *par) {
 }
 
 static void SignalHandler(int sig, siginfo_t *sinfo, void *ucontext) {
-	// hack lua5.3.4 linux-x64 为了判断是否不在lua中 L-nCcalls == 0
-	unsigned short nCcalls = *(unsigned short *)((char*)gL+198);
-	if (nCcalls == 0)
-	{
-		return;
-	}
     lua_sethook(gL, SignalHandlerHook, LUA_MASKCOUNT, 1);
 }
 
@@ -752,6 +748,7 @@ static int ldot(lua_State *L) {
     return 1;
 }
 
+#ifdef WITH_GRAPHVIZ
 static int lsvg(lua_State *L) {
 
     const char *srcfile = lua_tostring(L, 1);
@@ -789,6 +786,7 @@ static int lsvg(lua_State *L) {
     return 1;
 
 }
+#endif
 
 extern "C" int luaopen_libplua(lua_State *L) {
     luaL_checkversion(L);
@@ -797,7 +795,9 @@ extern "C" int luaopen_libplua(lua_State *L) {
             {"stop",  lstop},
             {"text",  ltext},
             {"dot",   ldot},
+#ifdef WITH_GRAPHVIZ
             {"svg",   lsvg},
+#endif
             {NULL,    NULL},
     };
     luaL_newlib(L, l);
