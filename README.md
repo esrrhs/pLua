@@ -34,8 +34,10 @@ p.stop()
 p.text("call.pro", "call.txt")
 -- 把结果转成dot格式，可用graphviz查看
 p.dot("call.pro", "call.dot")
--- 把结果转成svg格式，可直接用浏览器打开查看
-p.svg("call.pro", "call.svg")
+
+-- 把结果转成svg格式，可直接用浏览器打开查看，需要使用libpluag.so
+local pg = require "libpluag"
+pg.svg("call.pro", "call.svg")
 
 ```
 
