@@ -624,6 +624,16 @@ static int ltext(lua_State *L) {
     return 1;
 }
 
+static std::string escape_dot_name(const std::string & name) {
+	std::string ret = name;
+	for (int i = 0; i < (int)ret.length(); i++) {
+		if (ret[i] == '\"') {
+			ret[i] = '\'';
+		}
+	}
+	return ret;
+}
+
 static int output_dot(const char *dstfile) {
 
     int fd = open(dstfile, O_CREAT | O_WRONLY | O_TRUNC, 0666);
@@ -684,7 +694,7 @@ static int output_dot(const char *dstfile) {
 
     for (auto iter = funcarr.begin(); iter != funcarr.end(); iter++) {
         ss << "\tnode" << iter->first
-           << " [label=\"" << gId2String[iter->first] << "\\r"
+           << " [label=\"" << escape_dot_name(gId2String[iter->first]) << "\\r"
            << funcmapself[iter->first] << " (" << funcmapself[iter->first] * 100 / totalself << "%)" << "\\r";
 
         if (hassonset.find(iter->first) != hassonset.end()) {
