@@ -9,10 +9,16 @@ jobs:
     
     steps:
     - uses: actions/checkout@v1
-    - name: prepare
+    - name: prepare-graphviz
       run: |
-        sudo apt-get install *graphviz* -y
-    - name: prepare
+        sudo wget https://www2.graphviz.org/Packages/stable/portable_source/graphviz-2.44.0.tar.gz
+        sudo tar -xf graphviz-2.44.0.tar.gz
+        cd graphviz-2.44.0
+        sudo ./configure
+        sudo make
+        sudo make install
+        
+    - name: prepare-lua
       run: |
         sudo apt-get install libreadline-dev -y
         sudo wget https://www.lua.org/ftp/lua-5.3.4.tar.gz
