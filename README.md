@@ -46,8 +46,7 @@ pg.svg("call.pro", "call.svg")
 * 安装graphviz
 * 编译pLua
 ``` bash
-$ cmake .
-$ make
+$ ./build.sh
 ```
 
 ## 示例
