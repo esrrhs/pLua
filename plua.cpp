@@ -275,7 +275,9 @@ static void flush() {
     printf("pLua flush ok\n");
 }
 
-static int lrealstop() {
+extern "C" int lrealstop(lua_State *L) {
+
+    lua_sethook(L, 0, 0, 0);
 
     grunning = 0;
 
@@ -301,7 +303,7 @@ static void SignalHandlerHook(lua_State *L, lua_Debug *par) {
 
     if (gsamplecount != 0 && gsamplecount <= gProfileData.total) {
         LLOG("lrealstop...");
-        lrealstop();
+        lrealstop(L);
         return;
     }
     gProfileData.total++;
@@ -404,7 +406,7 @@ static void SignalHandler(int sig, siginfo_t *sinfo, void *ucontext) {
     lua_sethook(gL, SignalHandlerHook, LUA_MASKCOUNT, 1);
 }
 
-static int lrealstart(lua_State *L, int second, const char *file) {
+extern "C" int lrealstart(lua_State *L, int second, const char *file) {
 
     if (grunning) {
         LERR("start again, failed");
@@ -474,7 +476,7 @@ static int lstart(lua_State *L) {
 static int lstop(lua_State *L) {
 
     LLOG("lstop %s", gfilename.c_str());
-    int ret = lrealstop();
+    int ret = lrealstop(L);
 
     lua_pushinteger(L, ret);
     return 1;
