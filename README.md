@@ -80,7 +80,7 @@ $ ./buildg.sh
 [test2]
 
 ## 其他
-lua的代码覆盖率工具[cLua](https://github.com/esrrhs/clua)
+lua的代码覆盖率工具[cLua](https://github.com/esrrhs/cLua)
 
 
 
