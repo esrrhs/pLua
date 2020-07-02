@@ -53,18 +53,18 @@ p.text("call.pro", "call.txt")
 -- 把结果转成dot格式，可用graphviz查看
 p.dot("call.pro", "call.dot")
 
--- 把结果转成svg格式，可直接用浏览器打开查看，需要使用libpluag.so
+-- 把结果转成svg格式，可直接用浏览器打开查看，需要使用libpluag.so（安装graphviz）
 local pg = require "libpluag"
 pg.svg("call.pro", "call.svg")
 ```
 
 ## 编译
 * 安装lua 5.3
-* 编译pLua
+* 编译libplua.so
 ``` bash
 $ ./build.sh
 ```
-* （可选）安装graphviz
+* （可选）安装graphviz，编译libpluag.so
 ``` bash
 $ ./buildg.sh
 ```
