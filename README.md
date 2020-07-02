@@ -60,10 +60,13 @@ pg.svg("call.pro", "call.svg")
 
 ## 编译
 * 安装lua 5.3
-* 安装graphviz
 * 编译pLua
 ``` bash
 $ ./build.sh
+```
+* （可选）安装graphviz
+``` bash
+$ ./buildg.sh
 ```
 
 ## 示例
