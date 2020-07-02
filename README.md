@@ -16,7 +16,7 @@ Lua 性能分析工具
 - 直观，输出调用图，能直观的看到热点和调用关系
 
 ## 使用
-Lua code
+* 修改Lua code
 ``` lua
 -- 引入libplua.so
 local p = require "libplua"
@@ -30,17 +30,8 @@ do_some_thing()
 -- 结束采样，输出结果文件
 p.stop()
 
--- 把结果转成txt格式
-p.text("call.pro", "call.txt")
--- 把结果转成dot格式，可用graphviz查看
-p.dot("call.pro", "call.dot")
-
--- 把结果转成svg格式，可直接用浏览器打开查看，需要使用libpluag.so
-local pg = require "libpluag"
-pg.svg("call.pro", "call.svg")
-
 ```
-[hookso](https://github.com/esrrhs/hookso)注入
+* 或者用[hookso](https://github.com/esrrhs/hookso)注入
 ```
 a) 首先获取进程中的Lua_State指针，比如进程调用了lua_settop(L)函数，那么就取第一个参数
 # ./hookso arg $PID liblua.so lua_settop 1 
@@ -49,11 +40,22 @@ a) 首先获取进程中的Lua_State指针，比如进程调用了lua_settop(L)�
 b) 加载libplua.so
 # ./hookso dlopen $PID ./libplua.so
 
-c) 执行libplua.so的lrealstart手动开启，等价于lrealstart(L, 0, "./test.cov")
-# ./hookso call $PID libplua.so lrealstart i=123456 i=0 s="./test.cov"
+c) 执行libplua.so的lrealstart手动开启，等价于lrealstart(L, 0, "./call.pro")
+# ./hookso call $PID libplua.so lrealstart i=123456 i=0 s="./call.pro"
 
 c) 执行libclua.so的lrealstop手动关闭，等价于lrealstop(L)
 # ./hookso call $PID libplua.so lrealstop i=123456
+```
+* 查看生成的call.pro
+```
+-- 把结果转成txt格式
+p.text("call.pro", "call.txt")
+-- 把结果转成dot格式，可用graphviz查看
+p.dot("call.pro", "call.dot")
+
+-- 把结果转成svg格式，可直接用浏览器打开查看，需要使用libpluag.so
+local pg = require "libpluag"
+pg.svg("call.pro", "call.svg")
 ```
 
 ## 编译
