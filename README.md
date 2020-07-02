@@ -79,6 +79,8 @@ $ ./buildg.sh
 ![image](test2.png)
 [test2]
 
+## 其他
+lua的代码覆盖率工具[cLua](https://github.com/esrrhs/clua)
 
 
 
