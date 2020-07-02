@@ -71,6 +71,7 @@ $ ./buildg.sh
 
 ## 示例
 运行```lua test1.lua```、```lua test2.lua```
+
 查看svg结果
 ![image](test1.png)
 [test1]
