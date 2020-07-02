@@ -1,7 +1,7 @@
 
 function test()
 
-	for i = 1, 1000 do
+	for i = 1, 300 do
 		test1(i)
 	end
 
@@ -67,5 +67,6 @@ p.stop()
 
 p.text("call.pro", "call.txt")
 p.dot("call.pro", "call.dot")
-p.svg("call.pro", "call.svg")
+local pg = require "libpluag"
+pg.svg("call.pro", "call.svg")
 
