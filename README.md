@@ -64,7 +64,7 @@ pg.svg("call.pro", "call.svg")
 ``` bash
 $ ./build.sh
 ```
-* （可选）安装graphviz，编译libpluag.so
+* （可选）安装[graphviz](https://www2.graphviz.org/Packages/stable/portable_source/graphviz-2.44.1.tar.gz)，编译libpluag.so
 ``` bash
 $ ./buildg.sh
 ```
