@@ -11,6 +11,7 @@ jobs:
     - uses: actions/checkout@v1
     - name: prepare-graphviz
       run: |
+        sudo yum install perl -y
         sudo wget https://www2.graphviz.org/Packages/stable/portable_source/graphviz-2.44.0.tar.gz
         sudo tar -xf graphviz-2.44.0.tar.gz
         cd graphviz-2.44.0
