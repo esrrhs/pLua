@@ -291,21 +291,18 @@ func showpng(filedata *FileData, png string, svg string) {
 	if png != "" {
 		g := graphviz.New()
 
-		// 1. write encoded PNG data to buffer
 		var buf bytes.Buffer
 		if err := g.Render(graph, graphviz.PNG, &buf); err != nil {
 			fmt.Println(err)
 			os.Exit(1)
 		}
 
-		// 2. get as image.Image instance
 		_, err = g.RenderImage(graph)
 		if err != nil {
 			fmt.Println(err)
 			os.Exit(1)
 		}
 
-		// 3. write to file directly
 		if err := g.RenderFilename(graph, graphviz.PNG, png); err != nil {
 			fmt.Println(err)
 			os.Exit(1)
@@ -315,21 +312,18 @@ func showpng(filedata *FileData, png string, svg string) {
 	if svg != "" {
 		g := graphviz.New()
 
-		// 1. write encoded PNG data to buffer
 		var buf bytes.Buffer
 		if err := g.Render(graph, graphviz.SVG, &buf); err != nil {
 			fmt.Println(err)
 			os.Exit(1)
 		}
 
-		// 2. get as image.Image instance
 		_, err = g.RenderImage(graph)
 		if err != nil {
 			fmt.Println(err)
 			os.Exit(1)
 		}
 
-		// 3. write to file directly
 		if err := g.RenderFilename(graph, graphviz.SVG, svg); err != nil {
 			fmt.Println(err)
 			os.Exit(1)
