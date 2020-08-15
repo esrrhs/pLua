@@ -64,9 +64,3 @@ p.start(0, "call.pro")
 test()
 
 p.stop()
-
-p.text("call.pro", "call.txt")
-p.dot("call.pro", "call.dot")
-local pg = require "libpluag"
-pg.svg("call.pro", "call.svg")
-

@@ -20,7 +20,7 @@ function primes(n)
     return count
 end
 
-local p = require "libpluag"
+local p = require "libplua"
 
 p.start(0, "prime.pro")
 
@@ -29,5 +29,3 @@ local N = 10 * 10000
 print(primes(N))
 
 p.stop()
-
-p.svg("prime.pro", "prime.svg")

@@ -15,7 +15,20 @@ Lua 性能分析工具
 - 轻量，因为是采样的，相比直接按行lua hook，能最小程度影响宿主程序的运行
 - 直观，输出调用图，能直观的看到热点和调用关系
 
+## 编译
+* 安装lua 5.3
+* 编译插件libplua.so
+``` bash
+# ./build.sh
+```
+* 编译解析器plua
+``` bash
+# go get github.com/goccy/go-graphviz
+# go build plua.go
+```
+
 ## 使用
+#### 获取采样数据
 * 修改Lua code
 ``` lua
 -- 引入libplua.so
@@ -46,41 +59,40 @@ c) 执行libplua.so的lrealstart手动开启，等价于lrealstart(L, 0, "./call
 c) 执行libclua.so的lrealstop手动关闭，等价于lrealstop(L)
 # ./hookso call $PID libplua.so lrealstop i=123456
 ```
+#### 生成采样结果
 * 查看生成的call.pro
 ```
--- 把结果转成txt格式
-p.text("call.pro", "call.txt")
--- 把结果转成dot格式，可用graphviz查看
-p.dot("call.pro", "call.dot")
+# 转成txt格式
+# ./plua -i call.pro -text
 
--- 把结果转成svg格式，可直接用浏览器打开查看，需要使用libpluag.so（安装graphviz）
-local pg = require "libpluag"
-pg.svg("call.pro", "call.svg")
-```
+# 转成dot格式
+# ./plua -i call.pro -dot
 
-## 编译
-* 安装lua 5.3
-* 编译libplua.so
-``` bash
-$ ./build.sh
-```
-* （可选）安装[graphviz](https://www2.graphviz.org/Packages/stable/portable_source/graphviz-2.44.1.tar.gz)，编译libpluag.so
-``` bash
-$ ./buildg.sh
+# 转成svg格式
+# ./plua -i call.pro -png output.svg
+
+# 转成png格式
+# ./plua -i call.pro -png output.png
 ```
 
 ## 示例
-运行```lua test1.lua```、```lua test2.lua```
+* 运行lua
+```bash
+# lua test1.lua
+# lua test2.lua
+```
+* 生成png
+```bash
+# ./plua -i call.pro -png test1.png
+# ./plua -i prime.pro -png test2.png
+```
 
-查看svg结果
+* 查看test1.png
 ![image](test1.png)
-[test1]
 
+* 查看test2.png
 ![image](test2.png)
-[test2]
+
 
 ## 其他
 lua的代码覆盖率工具[cLua](https://github.com/esrrhs/cLua)
-
-
-
