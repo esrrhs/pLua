@@ -36,6 +36,7 @@ func main() {
 	dot := flag.Bool("dot", false, "show dot result")
 	png := flag.String("png", "", "gen png file")
 	svg := flag.String("svg", "", "gen svg file")
+	skip := flag.String("skip", "", "skip func")
 
 	flag.Parse()
 
@@ -44,7 +45,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	filedata, ok := parse(*input)
+	filedata, ok := parse(*input, *skip)
 	if !ok {
 		os.Exit(1)
 	}
@@ -62,7 +63,7 @@ func main() {
 	}
 }
 
-func parse(filename string) (*FileData, bool) {
+func parse(filename string, skip string) (*FileData, bool) {
 
 	data, err := ioutil.ReadFile(filename)
 	if err != nil {
@@ -114,6 +115,7 @@ func parse(filename string) (*FileData, bool) {
 
 		str2id[str] = id
 		id2str[id] = str
+
 		namenum++
 	}
 
@@ -143,6 +145,10 @@ func parse(filename string) (*FileData, bool) {
 		if count <= 0 {
 			fmt.Printf("count error %v\n", count)
 			return nil, false
+		}
+
+		if id2str[stacks[deps-1]] == skip {
+			continue
 		}
 
 		cs := CallStack{
