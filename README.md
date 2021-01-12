@@ -47,7 +47,7 @@ p.stop()
 * 或者用[hookso](https://github.com/esrrhs/hookso)注入
 ```
 a) 首先获取进程中的Lua_State指针，比如进程调用了lua_settop(L)函数，那么就取第一个参数
-# ./hookso arg $PID liblua.so lua_settop 1 
+# ./hookso arg $PID lua_settop 1 
 123456
 
 b) 加载libplua.so
