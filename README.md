@@ -80,11 +80,13 @@ c) 执行libclua.so的lrealstop手动关闭，等价于lrealstop(L)
 ```bash
 # lua test1.lua
 # lua test2.lua
+# lua test3.lua
 ```
 * 生成png
 ```bash
 # ./plua -i call.pro -png test1.png
 # ./plua -i prime.pro -png test2.png
+# ./plua -i sleep.pro -png test3.png
 ```
 
 * 查看test1.png
@@ -92,7 +94,9 @@ c) 执行libclua.so的lrealstop手动关闭，等价于lrealstop(L)
 
 * 查看test2.png
 ![image](test2.png)
-
+  
+* 查看test3.png
+![image](test3.png)
 
 ## 其他
 [lua全家桶](https://github.com/esrrhs/lua-family-bucket)
