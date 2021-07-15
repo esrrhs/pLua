@@ -9,6 +9,7 @@ import (
 	"io/ioutil"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -36,6 +37,7 @@ func main() {
 	dot := flag.Bool("dot", false, "show dot result")
 	png := flag.String("png", "", "gen png file")
 	svg := flag.String("svg", "", "gen svg file")
+	pprof := flag.String("pprof", "", "gen pprof symbolized-profiles")
 	skip := flag.String("skip", "", "skip func")
 
 	flag.Parse()
@@ -60,6 +62,10 @@ func main() {
 
 	if *png != "" || *svg != "" {
 		showpng(filedata, *png, *svg)
+	}
+
+	if *pprof != "" {
+		showpprof(filedata, *pprof)
 	}
 }
 
@@ -335,4 +341,59 @@ func showpng(filedata *FileData, png string, svg string) {
 			os.Exit(1)
 		}
 	}
+}
+
+func showpprof(filedata *FileData, filename string) {
+
+	var output []byte
+
+	output = append(output, []byte("--- symbol\n")...)
+	output = append(output, []byte("binary=pLua\n")...)
+
+	for id, str := range filedata.id2str {
+		output = append(output, []byte("0x"+strconv.FormatInt(int64(id), 16))...)
+		output = append(output, []byte(" ")...)
+		output = append(output, []byte(str)...)
+		output = append(output, []byte("\n")...)
+	}
+
+	output = append(output, []byte("---\n")...)
+	output = append(output, []byte("--- profile\n")...)
+
+	pack32 := func(v uint32) {
+		var buff [4]byte
+		binary.LittleEndian.PutUint32(buff[:], v)
+		output = append(output, buff[:]...)
+	}
+	pack64 := func(v uint64) {
+		var buff [8]byte
+		binary.LittleEndian.PutUint64(buff[:], v)
+		output = append(output, buff[:]...)
+	}
+
+	// print header (64-bit style)
+	// (zero) (header-size) (version) (sample-period) (zero)
+	header := []byte{0, 0, 3, 0, 0, 0, 1, 0, 0, 0}
+	for _, h := range header {
+		pack32(uint32(h))
+	}
+
+	for _, cs := range filedata.callstack {
+		pack32(uint32(cs.count))
+		pack32(uint32(cs.count / (2 ^ 32)))
+		pack32(uint32(cs.deps))
+		pack32(uint32(cs.deps / (2 ^ 32)))
+		for i := len(cs.stacks) - 1; i >= 0; i-- {
+			csp := cs.stacks[i]
+			pack64(uint64(csp))
+		}
+	}
+
+	f, err := os.Create(filename)
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+	defer f.Close()
+	f.Write(output)
 }
