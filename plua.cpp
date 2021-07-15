@@ -282,7 +282,7 @@ extern "C" int lrealstop(lua_State *L) {
     timer.it_interval.tv_sec = 0;
     timer.it_interval.tv_usec = 0;
     timer.it_value = timer.it_interval;
-    int ret = setitimer(ITIMER_REAL, &timer, NULL);
+    int ret = setitimer(ITIMER_PROF, &timer, NULL);
     if (ret != 0) {
         LERR("setitimer fail %d", ret);
         return ret;
@@ -431,7 +431,7 @@ extern "C" int lrealstart(lua_State *L, int second, const char *file) {
     sa.sa_flags = SA_RESTART | SA_SIGINFO;
     sigemptyset(&sa.sa_mask);
 
-    if (sigaction(SIGALRM, &sa, NULL) == -1) {
+    if (sigaction(SIGPROF, &sa, NULL) == -1) {
         LERR("sigaction(SIGALRM) failed");
         return -1;
     }
@@ -440,7 +440,7 @@ extern "C" int lrealstart(lua_State *L, int second, const char *file) {
     timer.it_interval.tv_sec = 0;
     timer.it_interval.tv_usec = iter * 1000;
     timer.it_value = timer.it_interval;
-    int ret = setitimer(ITIMER_REAL, &timer, NULL);
+    int ret = setitimer(ITIMER_PROF, &timer, NULL);
     if (ret != 0) {
         LERR("setitimer fail %d", ret);
         return -1;

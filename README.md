@@ -11,7 +11,7 @@ Lua 性能分析工具
 
 ## 特性
 - 简单，只需几行代码，即可输出结果，或通过[hookso](https://github.com/esrrhs/hookso)注入，不用修改代码
-- 准确，相比lua hook，定时采样的方式更能准确捕获lua执行的热点
+- 准确，相比lua hook，定时采样的方式更能准确捕获lua执行的热点。使用ITIMER_PROF跳过sleep的堆栈。
 - 轻量，因为是采样的，相比直接按行lua hook，能最小程度影响宿主程序的运行
 - 直观，输出调用图，能直观的看到热点和调用关系
 
@@ -46,8 +46,8 @@ p.stop()
 ```
 * 或者用[hookso](https://github.com/esrrhs/hookso)注入
 ```
-a) 首先获取进程中的Lua_State指针，比如进程调用了lua_settop(L)函数，那么就取第一个参数
-# ./hookso arg $PID liblua.so lua_settop 1 
+a) 首先获取进程中的Lua_State指针，比如进程的xxx.so调用了lua_settop(L)函数，那么就取第一个参数
+# ./hookso arg $PID xxx.so lua_settop 1 
 123456
 
 b) 加载libplua.so
@@ -80,11 +80,13 @@ c) 执行libclua.so的lrealstop手动关闭，等价于lrealstop(L)
 ```bash
 # lua test1.lua
 # lua test2.lua
+# lua test3.lua
 ```
 * 生成png
 ```bash
 # ./plua -i call.pro -png test1.png
 # ./plua -i prime.pro -png test2.png
+# ./plua -i sleep.pro -png test3.png
 ```
 
 * 查看test1.png
@@ -92,7 +94,9 @@ c) 执行libclua.so的lrealstop手动关闭，等价于lrealstop(L)
 
 * 查看test2.png
 ![image](test2.png)
-
+  
+* 查看test3.png
+![image](test3.png)
 
 ## 其他
-lua的代码覆盖率工具[cLua](https://github.com/esrrhs/cLua)
+[lua全家桶](https://github.com/esrrhs/lua-family-bucket)
