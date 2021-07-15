@@ -365,11 +365,6 @@ func showpprof(filedata *FileData, filename string) {
 		binary.LittleEndian.PutUint32(buff[:], v)
 		output = append(output, buff[:]...)
 	}
-	pack64 := func(v uint64) {
-		var buff [8]byte
-		binary.LittleEndian.PutUint64(buff[:], v)
-		output = append(output, buff[:]...)
-	}
 
 	// print header (64-bit style)
 	// (zero) (header-size) (version) (sample-period) (zero)
@@ -385,7 +380,8 @@ func showpprof(filedata *FileData, filename string) {
 		pack32(uint32(cs.deps / (2 ^ 32)))
 		for i := len(cs.stacks) - 1; i >= 0; i-- {
 			csp := cs.stacks[i]
-			pack64(uint64(csp))
+			pack32(uint32(csp))
+			pack32(uint32(0))
 		}
 	}
 
