@@ -27,9 +27,6 @@
 #include <vector>
 #include <unordered_set>
 #include <set>
-#ifdef WITH_GRAPHVIZ
-#include <graphviz/gvc.h>
-#endif
 
 extern "C" {
 #include "lua.h"
