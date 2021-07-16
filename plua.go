@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"github.com/goccy/go-graphviz"
 	"io/ioutil"
+	"math"
 	"os"
 	"sort"
-	"strconv"
 	"strings"
 )
 
@@ -351,10 +351,8 @@ func showpprof(filedata *FileData, filename string) {
 	output = append(output, []byte("binary=pLua\n")...)
 
 	for id, str := range filedata.id2str {
-		output = append(output, []byte("0x"+strconv.FormatInt(int64(id), 16))...)
-		output = append(output, []byte(" ")...)
-		output = append(output, []byte(str)...)
-		output = append(output, []byte("\n")...)
+		tmp := fmt.Sprintf("0x%016x %s\n", id+0xFF000000, str)
+		output = append(output, []byte(tmp)...)
 	}
 
 	output = append(output, []byte("---\n")...)
@@ -373,14 +371,17 @@ func showpprof(filedata *FileData, filename string) {
 		pack32(uint32(h))
 	}
 
+	total := 0
+
 	for _, cs := range filedata.callstack {
 		pack32(uint32(cs.count))
-		pack32(uint32(cs.count / (2 ^ 32)))
+		pack32(uint32(cs.count / int(math.Pow(2, 32))))
+		total += cs.count
 		pack32(uint32(cs.deps))
-		pack32(uint32(cs.deps / (2 ^ 32)))
+		pack32(uint32(cs.deps / int(math.Pow(2, 32))))
 		for i := len(cs.stacks) - 1; i >= 0; i-- {
 			csp := cs.stacks[i]
-			pack32(uint32(csp))
+			pack32(uint32(csp + 0xFF000000))
 			pack32(uint32(0))
 		}
 	}
@@ -392,4 +393,6 @@ func showpprof(filedata *FileData, filename string) {
 	}
 	defer f.Close()
 	f.Write(output)
+
+	fmt.Printf("total sample %v\n", total)
 }
