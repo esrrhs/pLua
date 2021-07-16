@@ -169,7 +169,7 @@ static int lastlevel(lua_State *L) {
 std::unordered_map<std::string, int> gString2Id;
 std::unordered_map<int, std::string> gId2String;
 
-static const char *IGNORE_NAME[] = {"?", "function 'xpcall'", "function 'pcall'", "function ", "function 'tcall'",
+static const char *IGNORE_NAME[] = {"?", "function 'xpcall'", "function 'pcall'", "function", "function 'tcall'",
                                     "function 'txpcall'"};
 static const int VALID_MIN_ID = sizeof(IGNORE_NAME) / sizeof(const char *);
 
@@ -247,9 +247,14 @@ static void flush() {
 
     flush_callstack();
 
+    int total_len = 0;
     for (auto iter = gString2Id.begin(); iter != gString2Id.end(); iter++) {
         const std::string &str = iter->first;
         int id = iter->second;
+
+        if (id < VALID_MIN_ID) {
+            continue;
+        }
 
         int len = str.length();
         len = len > MAX_FUNC_NAME_SIZE ? MAX_FUNC_NAME_SIZE : len;
@@ -257,10 +262,10 @@ static void flush() {
         flush_file(gfd, (const char *) &len, sizeof(len));
 
         flush_file(gfd, (const char *) &id, sizeof(id));
+        total_len++;
     }
 
-    int len = gString2Id.size();
-    flush_file(gfd, (const char *) &len, sizeof(len));
+    flush_file(gfd, (const char *) &total_len, sizeof(total_len));
 
     LLOG("flush ok %d %d", total, gProfileData.total);
 
