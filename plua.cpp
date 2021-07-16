@@ -417,7 +417,7 @@ extern "C" int lrealstart(lua_State *L, int second, const char *file) {
         gId2String[i] = IGNORE_NAME[i];
     }
 
-    const int iter = 100;
+    const int iter = 10;
 
     gsamplecount = second * 1000 / iter;
     gfilename = file;
