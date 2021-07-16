@@ -351,7 +351,9 @@ func showpprof(filedata *FileData, filename string) {
 	output = append(output, []byte("binary=pLua\n")...)
 
 	for id, str := range filedata.id2str {
-		tmp := fmt.Sprintf("0x%016x %s\n", id+0xFF000000, str)
+		name := strings.Replace(str, "<", "'", -1)
+		name = strings.Replace(name, ">", "'", -1)
+		tmp := fmt.Sprintf("0x%016x %s\n", id+0xFF000000, name)
 		output = append(output, []byte(tmp)...)
 	}
 

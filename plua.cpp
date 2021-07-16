@@ -170,7 +170,7 @@ std::unordered_map<std::string, int> gString2Id;
 std::unordered_map<int, std::string> gId2String;
 
 static const char *IGNORE_NAME[] = {"?", "function 'xpcall'", "function 'pcall'", "function", "function 'tcall'",
-                                    "function 'txpcall'"};
+                                    "function 'txpcall'", "local 'func'"};
 static const int VALID_MIN_ID = sizeof(IGNORE_NAME) / sizeof(const char *);
 
 static const int MAX_STACK_SIZE = 64;
