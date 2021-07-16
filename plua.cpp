@@ -169,7 +169,9 @@ static int lastlevel(lua_State *L) {
 std::unordered_map<std::string, int> gString2Id;
 std::unordered_map<int, std::string> gId2String;
 
-static const int VALID_MIN_ID = 3;
+static const char *IGNORE_NAME[] = {"?", "function 'xpcall'", "function 'pcall'", "function ", "function 'tcall'",
+                                    "function 'txpcall'"};
+static const int VALID_MIN_ID = sizeof(IGNORE_NAME) / sizeof(const char *);
 
 static const int MAX_STACK_SIZE = 64;
 static const int MAX_CALL_STACK_SIZE = 4;
@@ -331,11 +333,10 @@ static void SignalHandlerHook(lua_State *L, lua_Debug *par) {
         } else {
             id = iter->second;
         }
-		
-		if (id < VALID_MIN_ID)
-		{
-			continue;
-		}
+
+        if (id < VALID_MIN_ID) {
+            continue;
+        }
 
         LLOG("%s %d %d", funcname, id, last);
 
@@ -410,13 +411,11 @@ extern "C" int lrealstart(lua_State *L, int second, const char *file) {
         return -1;
     }
     grunning = 1;
-	
-	gString2Id["?"] = 0;
-	gId2String[0] = "?";
-	gString2Id["function 'xpcall'"] = 1;
-	gId2String[1] = "function 'xpcall'";
-	gString2Id["function 'pcall'"] = 2;
-	gId2String[2] = "function 'pcall'";
+
+    for (int i = 0; i < VALID_MIN_ID; i++) {
+        gString2Id[IGNORE_NAME[i]] = i;
+        gId2String[i] = IGNORE_NAME[i];
+    }
 
     const int iter = 100;
 
@@ -484,7 +483,7 @@ extern "C" int luaopen_libplua(lua_State *L) {
     luaL_Reg l[] = {
             {"start", lstart},
             {"stop",  lstop},
-            {NULL,    NULL},
+            {NULL, NULL},
     };
     luaL_newlib(L, l);
     return 1;
