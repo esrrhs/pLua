@@ -69,7 +69,7 @@ c) 执行libclua.so的lrealstop手动关闭，等价于lrealstop(L)
 # ./plua -i call.pro -dot
 
 # 转成svg格式
-# ./plua -i call.pro -png output.svg
+# ./plua -i call.pro -svg output.svg
 
 # 转成png格式
 # ./plua -i call.pro -png output.png
