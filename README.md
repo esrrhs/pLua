@@ -100,13 +100,13 @@ c) 执行libclua.so的lrealstop手动关闭，等价于lrealstop(L)
 ```
 
 * 查看test1.png
-![image](test1.png)
+![image](test/test1.png)
 
 * 查看test2.png
-![image](test2.png)
+![image](test/test2.png)
   
 * 查看test3.png
-![image](test3.png)
+![image](test/test3.png)
 
 ## 其他
 [lua全家桶](https://github.com/esrrhs/lua-family-bucket)
