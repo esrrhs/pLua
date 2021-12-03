@@ -149,7 +149,7 @@ static void pushfuncname(lua_State *L, lua_Debug *ar) {
 static int lastlevel(lua_State *L) {
     lua_Debug ar;
     int li = 1, le = 1;
-    /* find an upper bound */
+    /* find the bottom index of the call stack. */
     while (lua_getstack(L, le, &ar)) {
         li = le;
         le *= 2;
