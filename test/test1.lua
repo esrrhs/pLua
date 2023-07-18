@@ -1,3 +1,4 @@
+package.cpath = "../bin/?.so;" .. package.cpath
 
 function test()
 

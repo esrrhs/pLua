@@ -353,6 +353,7 @@ func showpprof(filedata *FileData, filename string) {
 	for id, str := range filedata.id2str {
 		name := strings.Replace(str, "<", "'", -1)
 		name = strings.Replace(name, ">", "'", -1)
+		name = strings.Replace(name, "\"", "\\\"", -1)
 		tmp := fmt.Sprintf("0x%016x %s\n", id+0xFF000000, name)
 		output = append(output, []byte(tmp)...)
 	}

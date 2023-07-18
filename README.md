@@ -85,6 +85,16 @@ c) 执行libclua.so的lrealstop手动关闭，等价于lrealstop(L)
 # pprof --png call.pprof > call.png
 ```
 
+#### 使用[火焰图](https://github.com/brendangregg/FlameGraph)查看结果
+```
+# 转成pprof格式
+# ./plua -i call.pro -pprof call.pprof
+
+# 输出pprof的text、dot、png等等
+# pprof --collapsed call.prof > call.fl
+# flamegraph.pl call.fl > call.svg
+```
+
 ## 示例
 * 运行lua
 ```bash

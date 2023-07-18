@@ -1,3 +1,5 @@
+package.cpath = "../bin/?.so;" .. package.cpath
+
 local t = {}
 function test_insert(n)
     table.insert(t, n)
