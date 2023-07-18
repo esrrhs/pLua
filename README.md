@@ -13,7 +13,7 @@ Lua 性能分析工具
 - 简单，只需几行代码，即可输出结果，或通过[hookso](https://github.com/esrrhs/hookso)注入，不用修改代码
 - 准确，相比lua hook，定时采样的方式更能准确捕获lua执行的热点，使用ITIMER_PROF剔除sleep等堆栈
 - 轻量，因为是采样的，相比直接按行lua hook，能最小程度影响宿主程序的运行
-- 直观，输出调用图，能直观的看到热点和调用关系，可兼容gperftools的pprof工具
+- 直观，输出调用图，能直观的看到热点和调用关系，可兼容gperftools的pprof工具，可生成火焰图
 
 ## 编译
 * 安装lua 5.3
