@@ -1,3 +1,5 @@
+package.cpath = "../bin/?.so;" .. package.cpath
+
 function isprime(n)
     local nn = n - 1
     for i = 2, nn do
