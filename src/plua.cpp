@@ -34,11 +34,11 @@ extern "C" {
 #include "lauxlib.h"
 }
 
-int open_debug = 0;
-int gsamplecount;
-std::string gfilename;
-lua_State *gL;
-int grunning = 0;
+const int open_debug = 0;
+int gSampleCount = 0;
+std::string gFilename;
+lua_State *gL = 0;
+int gRunning = 0;
 
 #define LLOG(...) if (open_debug) {llog("[DEBUG] ", __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__);}
 #define LERR(...) if (open_debug) {llog("[ERROR] ", __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__);}
@@ -174,31 +174,46 @@ static const char *IGNORE_NAME[] = {"?", "function 'xpcall'", "function 'pcall'"
 static const int VALID_MIN_ID = sizeof(IGNORE_NAME) / sizeof(const char *);
 
 static const int MAX_STACK_SIZE = 64;
-static const int MAX_CALL_STACK_SIZE = 4;
-static const int MAX_BUCKET_SIZE = 1 << 10;
-static const int MAX_CALL_STACK_SAVE_SIZE = 1 << 18;
 
 struct CallStack {
-    int count;
     int depth;
     int stack[MAX_STACK_SIZE];
 };
 
-struct Bucket {
-    CallStack cs[MAX_CALL_STACK_SIZE];
+struct CallStackHash {
+    size_t operator()(const CallStack &cs) const {
+        size_t hash = 0;
+        for (int i = 0; i < cs.depth; i++) {
+            int id = cs.stack[i];
+            hash = (hash << 8) | (hash >> (8 * (sizeof(hash) - 1)));
+            hash += (id * 31) + (id * 7) + (id * 3);
+        }
+        return hash;
+    }
+};
+
+struct CallStackEqual {
+    bool operator()(const CallStack &cs1, const CallStack &cs2) const {
+        if (cs1.depth != cs2.depth) {
+            return false;
+        }
+        for (int i = 0; i < cs1.depth; i++) {
+            if (cs1.stack[i] != cs2.stack[i]) {
+                return false;
+            }
+        }
+        return true;
+    }
 };
 
 struct ProfileData {
-    Bucket bucket[MAX_BUCKET_SIZE];
+    std::unordered_map<CallStack, int, CallStackHash, CallStackEqual> callstack;
     int total;
 };
 
-int gfd;
-
 ProfileData gProfileData;
-CallStack gCallStackSaved[MAX_CALL_STACK_SAVE_SIZE];
-int gCallStackSavedSize = 0;
 
+int gfd = 0;
 
 static void flush_file(int fd, const char *buf, size_t len) {
     while (len > 0) {
@@ -208,23 +223,6 @@ static void flush_file(int fd, const char *buf, size_t len) {
     }
 }
 
-static void flush_callstack() {
-    LLOG("flush_callstack");
-    flush_file(gfd, (const char *) gCallStackSaved, sizeof(CallStack) * gCallStackSavedSize);
-    gCallStackSavedSize = 0;
-}
-
-static void save_callstack(CallStack *pcs) {
-
-    LLOG("save_callstack");
-
-    if (gCallStackSavedSize >= MAX_CALL_STACK_SAVE_SIZE) {
-        flush_callstack();
-    }
-    gCallStackSaved[gCallStackSavedSize] = *pcs;
-    gCallStackSavedSize++;
-}
-
 static void flush() {
     if (gProfileData.total <= 0) {
         return;
@@ -232,20 +230,13 @@ static void flush() {
 
     LLOG("flush...");
 
-    int total = 0;
-    for (int b = 0; b < MAX_BUCKET_SIZE; b++) {
-        Bucket *bucket = &gProfileData.bucket[b];
-        for (int a = 0; a < MAX_CALL_STACK_SIZE; a++) {
-            if (bucket->cs[a].count > 0) {
-                save_callstack(&bucket->cs[a]);
-                bucket->cs[a].depth = 0;
-                bucket->cs[a].count = 0;
-                total++;
-            }
-        }
-    }
+    for (auto iter = gProfileData.callstack.begin(); iter != gProfileData.callstack.end(); iter++) {
+        const CallStack &cs = iter->first;
+        int count = iter->second;
 
-    flush_callstack();
+        flush_file(gfd, (const char *) &count, sizeof(count));
+        flush_file(gfd, (const char *) &cs, sizeof(cs));
+    }
 
     int total_len = 0;
     for (auto iter = gString2Id.begin(); iter != gString2Id.end(); iter++) {
@@ -267,23 +258,24 @@ static void flush() {
 
     flush_file(gfd, (const char *) &total_len, sizeof(total_len));
 
-    LLOG("flush ok %d %d", total, gProfileData.total);
+    int total = gProfileData.total;
+    LLOG("flush ok %d", gProfileData.total);
 
     gProfileData.total = 0;
+    gProfileData.callstack.clear();
 
     if (gfd != 0) {
         close(gfd);
         gfd = 0;
     }
 
-    printf("pLua flush ok\n");
+    printf("pLua flush ok %d\n", total);
 }
 
 extern "C" int lrealstop(lua_State *L) {
-
     lua_sethook(L, 0, 0, 0);
 
-    grunning = 0;
+    gRunning = 0;
 
     struct itimerval timer;
     timer.it_interval.tv_sec = 0;
@@ -305,7 +297,7 @@ static void SignalHandlerHook(lua_State *L, lua_Debug *par) {
 
     lua_sethook(gL, 0, 0, 0);
 
-    if (gsamplecount != 0 && gsamplecount <= gProfileData.total) {
+    if (gSampleCount != 0 && gSampleCount <= gProfileData.total) {
         LLOG("lrealstop...");
         lrealstop(L);
         return;
@@ -349,60 +341,7 @@ static void SignalHandlerHook(lua_State *L, lua_Debug *par) {
         cs.depth++;
     }
 
-    int hash = 0;
-    for (int i = 0; i < cs.depth; i++) {
-        int id = cs.stack[i];
-        hash = (hash << 8) | (hash >> (8 * (sizeof(hash) - 1)));
-        hash += (id * 31) + (id * 7) + (id * 3);
-    }
-
-    LLOG("hash %d", hash);
-
-    bool done = false;
-    Bucket *bucket = &gProfileData.bucket[(uint32_t) hash % MAX_BUCKET_SIZE];
-    for (int a = 0; a < MAX_CALL_STACK_SIZE; a++) {
-        CallStack *pcs = &bucket->cs[a];
-        if (pcs->depth == 0 && pcs->count == 0) {
-            pcs->depth = cs.depth;
-            pcs->count = 1;
-            memcpy(pcs->stack, cs.stack, sizeof(int) * cs.depth);
-            done = true;
-
-            LLOG("hash %d add first %d %d", hash, pcs->count, pcs->depth);
-            break;
-        } else if (pcs->depth == cs.depth) {
-            if (memcmp(pcs->stack, cs.stack, sizeof(int) * cs.depth) != 0) {
-                break;
-            } else {
-                pcs->count++;
-                done = true;
-
-                LLOG("hash %d add %d %d", hash, pcs->count, pcs->depth);
-                break;
-            }
-        }
-    }
-
-    if (!done) {
-        CallStack *pcs = &bucket->cs[0];
-        for (int a = 1; a < MAX_CALL_STACK_SIZE; a++) {
-            if (bucket->cs[a].count < pcs->count) {
-                pcs = &bucket->cs[a];
-            }
-        }
-
-        if (pcs->count > 0) {
-            save_callstack(pcs);
-        }
-
-        // Use the newly evicted entry
-        pcs->depth = cs.depth;
-        pcs->count = 1;
-        memcpy(pcs->stack, cs.stack, sizeof(int) * cs.depth);
-
-        LLOG("hash %d add new %d %d", hash, pcs->count, pcs->depth);
-    }
-
+    gProfileData.callstack[cs]++;
 }
 
 static void SignalHandler(int sig, siginfo_t *sinfo, void *ucontext) {
@@ -410,12 +349,11 @@ static void SignalHandler(int sig, siginfo_t *sinfo, void *ucontext) {
 }
 
 extern "C" int lrealstart(lua_State *L, int second, const char *file) {
-
-    if (grunning) {
+    if (gRunning) {
         LERR("start again, failed");
         return -1;
     }
-    grunning = 1;
+    gRunning = 1;
 
     for (int i = 0; i < VALID_MIN_ID; i++) {
         gString2Id[IGNORE_NAME[i]] = i;
@@ -424,11 +362,11 @@ extern "C" int lrealstart(lua_State *L, int second, const char *file) {
 
     const int iter = 10;
 
-    gsamplecount = second * 1000 / iter;
-    gfilename = file;
+    gSampleCount = second * 1000 / iter;
+    gFilename = file;
     gL = L;
 
-    LLOG("lstart %u %s", gsamplecount, file);
+    LLOG("lstart %u %s", gSampleCount, file);
 
     struct sigaction sa;
     sa.sa_sigaction = SignalHandler;
@@ -450,9 +388,8 @@ extern "C" int lrealstart(lua_State *L, int second, const char *file) {
         return -1;
     }
 
-    memset(&gProfileData, 0, sizeof(gProfileData));
-    memset(&gCallStackSaved, 0, sizeof(gCallStackSaved));
-    memset(&gCallStackSavedSize, 0, sizeof(gCallStackSavedSize));
+    gProfileData.total = 0;
+    gProfileData.callstack.clear();
 
     int fd = open(file, O_CREAT | O_WRONLY | O_TRUNC, 0666);
     if (fd < 0) {
@@ -475,19 +412,124 @@ static int lstart(lua_State *L) {
 }
 
 static int lstop(lua_State *L) {
-
-    LLOG("lstop %s", gfilename.c_str());
+    LLOG("lstop %s", gFilename.c_str());
     int ret = lrealstop(L);
 
     lua_pushinteger(L, ret);
     return 1;
 }
 
+//////////////////////////////////mem profiler start////////////////////////////////////////
+
+lua_Alloc gOldAlloc = NULL;
+bool gIsInAlloc = false;
+int gProfileRate = 0;
+int gNextSample = 0;
+
+static int gen_next_sample(int mean) {
+    // TODO
+    return 0;
+}
+
+static void *my_lua_Alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
+    LLOG("my_lua_Alloc %p %p %u %u", ud, ptr, osize, nsize);
+    // 防止重入
+    if (!gIsInAlloc) {
+        gIsInAlloc = true;
+
+        // TODO
+    }
+
+    void *ret = gOldAlloc(ud, ptr, osize, nsize);
+    gIsInAlloc = false;
+    return ret;
+}
+
+static void OpenMemHandlerHook(lua_State *L, lua_Debug *par) {
+    lua_sethook(L, 0, 0, 0);
+    if (gRunning) {
+        // replace the realloc
+        gOldAlloc = lua_getallocf(L, NULL);
+        gIsInAlloc = false;
+        gNextSample = gen_next_sample(gSampleCount);
+        lua_setallocf(L, my_lua_Alloc, NULL);
+    }
+}
+
+extern "C" int lrealstartmem(lua_State *L, int count, int profile_rate, const char *file) {
+    if (gRunning) {
+        LERR("start again, failed");
+        return -1;
+    }
+    gRunning = 1;
+
+    gL = L;
+    gSampleCount = count;
+    gProfileRate = profile_rate;
+    gFilename = file;
+
+    LLOG("lstart %u %s", gSampleCount, file);
+
+    gProfileData.total = 0;
+    gProfileData.callstack.clear();
+
+    int fd = open(file, O_CREAT | O_WRONLY | O_TRUNC, 0666);
+    if (fd < 0) {
+        LERR("open file fail %s", file);
+        return -1;
+    }
+
+    gfd = fd;
+
+    gOldAlloc = NULL;
+    gIsInAlloc = false;
+    gNextSample = 0;
+    lua_sethook(gL, OpenMemHandlerHook, LUA_MASKCOUNT, 1);
+
+    return 0;
+}
+
+static int lstart_mem(lua_State *L) {
+    int count = (int) lua_tointeger(L, 1);
+    int profile_rate = (int) lua_tointeger(L, 2);
+    const char *file = lua_tostring(L, 3);
+
+    int ret = lrealstartmem(L, count, profile_rate, file);
+    lua_pushinteger(L, ret);
+    return 1;
+}
+
+extern "C" int lrealstopmem(lua_State *L) {
+    lua_sethook(L, 0, 0, 0);
+
+    lua_setallocf(L, gOldAlloc, NULL);
+
+    gRunning = 0;
+
+    flush();
+    return 0;
+}
+
+static int lstop_mem(lua_State *L) {
+    LLOG("lstop %s", gFilename.c_str());
+    int ret = lrealstopmem(L);
+
+    lua_pushinteger(L, ret);
+    return 1;
+}
+
+//////////////////////////////////mem profiler end//////////////////////////////////////////
+
 extern "C" int luaopen_libplua(lua_State *L) {
     luaL_checkversion(L);
     luaL_Reg l[] = {
-            {"start", lstart},
-            {"stop",  lstop},
+            // for cpu
+            {"start",     lstart},
+            {"stop",      lstop},
+
+            // for memory
+            {"start_mem", lstart_mem},
+            {"stop",      lstop_mem},
             {NULL, NULL},
     };
     luaL_newlib(L, l);
