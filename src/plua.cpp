@@ -445,9 +445,9 @@ static int lstop(lua_State *L) {
 //////////////////////////////////mem profiler start////////////////////////////////////////
 
 lua_Alloc gOldAlloc = NULL;
-bool gIsInAlloc = false;
 int gProfileRate = 0;
 int gNextSample = 0;
+
 
 static int gen_next_sample(int mean) {
     // TODO
@@ -456,15 +456,14 @@ static int gen_next_sample(int mean) {
 
 static void *my_lua_Alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
     LLOG("my_lua_Alloc %p %p %u %u", ud, ptr, osize, nsize);
-    // 防止重入
-    if (!gIsInAlloc) {
-        gIsInAlloc = true;
 
-        // TODO
+    if (osize < nsize) {
+        // alloc
+        size_t alloc_sz = nsize - osize;
+
     }
 
     void *ret = gOldAlloc(ud, ptr, osize, nsize);
-    gIsInAlloc = false;
     return ret;
 }
 
@@ -483,7 +482,6 @@ static int lrealstartmemsafe(lua_State *L) {
 
     // replace the realloc
     gOldAlloc = lua_getallocf(L, NULL);
-    gIsInAlloc = false;
     gNextSample = gen_next_sample(gSampleCount);
     lua_setallocf(L, my_lua_Alloc, NULL);
 
