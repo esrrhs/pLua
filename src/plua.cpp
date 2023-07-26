@@ -304,24 +304,12 @@ extern "C" int lrealstop(lua_State *L) {
     return 0;
 }
 
-static void SignalHandlerHook(lua_State *L, lua_Debug *par) {
-    LLOG("Hook...");
-
-    lua_sethook(gL, 0, 0, 0);
-
-    if (gSampleCount != 0 && gSampleCount <= gProfileData.total) {
-        LLOG("lrealstop...");
-        lrealstop(L);
-        return;
-    }
-    gProfileData.total++;
-
+static void get_cur_callstack(lua_State *L, CallStack &cs) {
     lua_Debug ar;
 
     int last = lastlevel(L);
     int i = 0;
 
-    CallStack cs;
     cs.depth = 0;
 
     while (lua_getstack(L, last, &ar) && i < MAX_STACK_SIZE) {
@@ -352,6 +340,22 @@ static void SignalHandlerHook(lua_State *L, lua_Debug *par) {
         cs.stack[cs.depth] = id;
         cs.depth++;
     }
+}
+
+static void SignalHandlerHook(lua_State *L, lua_Debug *par) {
+    LLOG("Hook...");
+
+    lua_sethook(gL, 0, 0, 0);
+
+    if (gSampleCount != 0 && gSampleCount <= gProfileData.total) {
+        LLOG("lrealstop...");
+        lrealstop(L);
+        return;
+    }
+    gProfileData.total++;
+
+    CallStack cs;
+    get_cur_callstack(L, cs);
 
     auto it = gProfileData.callstack.find(&cs);
     if (it == gProfileData.callstack.end()) {
@@ -458,84 +462,39 @@ static int lstop(lua_State *L) {
 //////////////////////////////////mem profiler start////////////////////////////////////////
 
 lua_Alloc gOldAlloc = NULL;
-int gProfileRate = 0;
-int gNextSample = 0;
+static const int MEM_PROFILE_RATE = 524288;  // 512K
+size_t gNextSample = 0;
+bool gOnlyAlloc = false;
+uint64_t gRand = 0;
 
-
-static int gen_next_sample(int mean) {
-    // TODO
-    return 0;
+// 移植自gperftools的Sampler::NextRandom
+static uint64_t next_random(uint64_t rnd) {
+    const uint64_t prng_mult = 0x5DEECE66DULL;
+    const uint64_t prng_add = 0xB;
+    const uint64_t prng_mod_power = 48;
+    const uint64_t prng_mod_mask = ~((~static_cast<uint64_t>(0)) << prng_mod_power);
+    return (prng_mult * rnd + prng_add) & prng_mod_mask;
 }
 
-static void *my_lua_Alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
-    LLOG("my_lua_Alloc %p %p %u %u", ud, ptr, osize, nsize);
+#define MAX_SSIZE (static_cast<ssize_t>(static_cast<size_t>(static_cast<ssize_t>(-1)) >> 1))
 
-    if (osize < nsize) {
-        // alloc
-        size_t alloc_sz = nsize - osize;
+// 移植自gperftools的Sampler::PickNextSamplingPoint
+static size_t gen_next_sample() {
+    gRand = next_random(gRand);
+    // Take the top 26 bits as the random number
+    // (This plus the 1<<58 sampling bound give a max possible step of
+    // 5194297183973780480 bytes.)
+    const uint64_t prng_mod_power = 48;  // Number of bits in prng
+    // The uint32_t cast is to prevent a (hard-to-reproduce) NAN
+    // under piii debug for some binaries.
+    double q = static_cast<uint32_t>(gRand >> (prng_mod_power - 26)) + 1.0;
+    // Put the computed p-value through the CDF of a geometric.
+    double interval = (log2(q) - 26) * (-log(2.0) * MEM_PROFILE_RATE);
 
-    }
-
-    void *ret = gOldAlloc(ud, ptr, osize, nsize);
-    return ret;
-}
-
-static int lrealstartmemsafe(lua_State *L) {
-    int fd = open(gFilename.c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0666);
-    if (fd < 0) {
-        LERR("open file fail %s", gFilename.c_str());
-        return -1;
-    }
-
-    gfd = fd;
-
-    gProfileData.total = 0;
-    for (auto iter = gProfileData.callstack.begin(); iter != gProfileData.callstack.end(); iter++) {
-        delete iter->first;
-    }
-    gProfileData.callstack.clear();
-    gProfileData.callstack.reserve(PROFILE_DATA_CALLSTACK_SIZE);
-
-    // replace the realloc
-    gOldAlloc = lua_getallocf(L, NULL);
-    gNextSample = gen_next_sample(gSampleCount);
-    lua_setallocf(L, my_lua_Alloc, NULL);
-
-    return 0;
-}
-
-static void StartMemHandlerHook(lua_State *L, lua_Debug *par) {
-    lua_sethook(L, 0, 0, 0);
-    lrealstartmemsafe(L);
-}
-
-extern "C" int lrealstartmem(lua_State *L, int count, int profile_rate, const char *file) {
-    if (gRunning) {
-        LERR("start again, failed");
-        return -1;
-    }
-    gRunning = 1;
-
-    gL = L;
-    gSampleCount = count;
-    gProfileRate = profile_rate;
-    gFilename = file;
-
-    // lrealstartmem可能被注入调用，在StartMemHandlerHook里面执行具体的逻辑
-    lua_sethook(gL, StartMemHandlerHook, LUA_MASKCOUNT, 1);
-
-    LLOG("lstart %u %s", gSampleCount, file);
-
-    return 0;
-}
-
-static int lstart_mem(lua_State *L) {
-    int count = (int) lua_tointeger(L, 1);
-    int profile_rate = (int) lua_tointeger(L, 2);
-    const char *file = lua_tostring(L, 3);
-    int ret = lrealstartmem(L, count, profile_rate, file);
-    lua_pushinteger(L, ret);
-    return 1;
+    // Very large values of interval overflow ssize_t. If we happen to
+    // hit such improbable condition, we simply cheat and clamp interval
+    // to largest supported value.
+    return static_cast<size_t>(std::min<double>(interval, static_cast<double>(MAX_SSIZE)));
 }
 
 static int lrealstopmemsafe(lua_State *L) {
@@ -559,6 +518,129 @@ extern "C" int lrealstopmem(lua_State *L) {
     // lrealstopmem可能被注入调用，在StopMemHandlerHook里面执行具体的逻辑
     lua_sethook(gL, StopMemHandlerHook, LUA_MASKCOUNT, 1);
     return 0;
+}
+
+static void *my_lua_Alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
+    LLOG("my_lua_Alloc %p %p %u %u", ud, ptr, osize, nsize);
+
+    do {
+        // check stop if set sample count
+        if (gSampleCount != 0 && gSampleCount <= gProfileData.total) {
+            LLOG("lrealstopmem...");
+            lrealstopmem(gL);
+            break;
+        }
+
+        if (gOnlyAlloc) {
+            if (osize >= nsize) {
+                break;
+            }
+
+            // is alloc
+            size_t alloc_sz = nsize - osize;
+            if (alloc_sz < gNextSample) {
+                gNextSample -= alloc_sz;
+                break;
+            }
+
+            gNextSample = gen_next_sample();
+
+            // start profile
+            gProfileData.total++;
+
+            CallStack cs;
+            get_cur_callstack(gL, cs);
+
+            auto it = gProfileData.callstack.find(&cs);
+            if (it == gProfileData.callstack.end()) {
+                auto new_cs = new CallStack();
+                memcpy(new_cs, &cs, sizeof(cs));
+                gProfileData.callstack[new_cs] = alloc_sz;
+            } else {
+                it->second += alloc_sz;
+            }
+        } else {
+            // TODO
+        }
+    } while (0);
+
+    void *ret = gOldAlloc(ud, ptr, osize, nsize);
+    return ret;
+}
+
+static int lrealstartmemsafe(lua_State *L) {
+    if (gRunning) {
+        LERR("start again, failed");
+        return -1;
+    }
+    gRunning = 1;
+
+    for (int i = 0; i < VALID_MIN_ID; i++) {
+        gString2Id[IGNORE_NAME[i]] = i;
+        gId2String[i] = IGNORE_NAME[i];
+    }
+
+    int fd = open(gFilename.c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0666);
+    if (fd < 0) {
+        LERR("open file fail %s", gFilename.c_str());
+        return -1;
+    }
+
+    gfd = fd;
+
+    gProfileData.total = 0;
+    for (auto iter = gProfileData.callstack.begin(); iter != gProfileData.callstack.end(); iter++) {
+        delete iter->first;
+    }
+    gProfileData.callstack.clear();
+    gProfileData.callstack.reserve(PROFILE_DATA_CALLSTACK_SIZE);
+
+    // replace the realloc
+    gOldAlloc = lua_getallocf(L, NULL);
+    lua_setallocf(L, my_lua_Alloc, NULL);
+    gRand = time(NULL);
+    // Step it forward 20 times for good measure
+    for (int i = 0; i < 20; i++) {
+        gRand = next_random(gRand);
+    }
+    gNextSample = gen_next_sample();
+
+    return 0;
+}
+
+static void StartMemHandlerHook(lua_State *L, lua_Debug *par) {
+    lua_sethook(L, 0, 0, 0);
+    lrealstartmemsafe(L);
+}
+
+extern "C" int lrealstartmem(lua_State *L, int count, int only_alloc, const char *file) {
+    if (gRunning) {
+        LERR("start again, failed");
+        return -1;
+    }
+
+    gL = L;
+    gSampleCount = count;
+    gOnlyAlloc = (only_alloc != 0);
+    gFilename = file;
+    gOldAlloc = NULL;
+    gNextSample = 0;
+
+    // lrealstartmem可能被注入调用，在StartMemHandlerHook里面执行具体的逻辑
+    lua_sethook(gL, StartMemHandlerHook, LUA_MASKCOUNT, 1);
+
+    LLOG("lstart %u %s", gSampleCount, file);
+
+    return 0;
+}
+
+static int lstart_mem(lua_State *L) {
+    int count = (int) lua_tointeger(L, 1);
+    int only_alloc = (int) lua_tointeger(L, 2);
+    const char *file = lua_tostring(L, 3);
+    int ret = lrealstartmem(L, count, only_alloc, file);
+    lua_pushinteger(L, ret);
+    return 1;
 }
 
 static int lstop_mem(lua_State *L) {
