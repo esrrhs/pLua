@@ -183,10 +183,10 @@ struct CallStack {
 };
 
 struct CallStackHash {
-    size_t operator()(const CallStack &cs) const {
+    size_t operator()(CallStack *cs) const {
         size_t hash = 0;
-        for (int i = 0; i < cs.depth; i++) {
-            int id = cs.stack[i];
+        for (int i = 0; i < cs->depth; i++) {
+            int id = cs->stack[i];
             hash = (hash << 8) | (hash >> (8 * (sizeof(hash) - 1)));
             hash += (id * 31) + (id * 7) + (id * 3);
         }
@@ -195,16 +195,16 @@ struct CallStackHash {
 };
 
 struct CallStackEqual {
-    bool operator()(const CallStack &cs1, const CallStack &cs2) const {
-        if (cs1.depth != cs2.depth) {
+    bool operator()(CallStack *cs1, CallStack *cs2) const {
+        if (cs1->depth != cs2->depth) {
             return false;
         }
-        return memcmp(cs1.stack, cs2.stack, sizeof(int) * cs1.depth) == 0;
+        return memcmp(cs1->stack, cs2->stack, sizeof(int) * cs1->depth) == 0;
     }
 };
 
 struct ProfileData {
-    std::unordered_map<CallStack, int, CallStackHash, CallStackEqual> callstack;
+    std::unordered_map<CallStack *, int, CallStackHash, CallStackEqual> callstack;
     int total;
 };
 
@@ -229,7 +229,7 @@ static void flush() {
     LLOG("flush...");
 
     for (auto iter = gProfileData.callstack.begin(); iter != gProfileData.callstack.end(); iter++) {
-        const CallStack &cs = iter->first;
+        const CallStack &cs = *iter->first;
         int count = iter->second;
 
         flush_file(gfd, (const char *) &count, sizeof(count));
@@ -260,6 +260,9 @@ static void flush() {
     LLOG("flush ok %d", gProfileData.total);
 
     gProfileData.total = 0;
+    for (auto iter = gProfileData.callstack.begin(); iter != gProfileData.callstack.end(); iter++) {
+        delete iter->first;
+    }
     gProfileData.callstack.clear();
 
     if (gfd != 0) {
@@ -350,7 +353,14 @@ static void SignalHandlerHook(lua_State *L, lua_Debug *par) {
         cs.depth++;
     }
 
-    gProfileData.callstack[cs]++;
+    auto it = gProfileData.callstack.find(&cs);
+    if (it == gProfileData.callstack.end()) {
+        auto new_cs = new CallStack();
+        memcpy(new_cs, &cs, sizeof(cs));
+        gProfileData.callstack[new_cs] = 1;
+    } else {
+        it->second++;
+    }
 }
 
 static void SignalHandler(int sig, siginfo_t *sinfo, void *ucontext) {
@@ -398,6 +408,9 @@ static int lrealstartsafe(lua_State *L) {
     }
 
     gProfileData.total = 0;
+    for (auto iter = gProfileData.callstack.begin(); iter != gProfileData.callstack.end(); iter++) {
+        delete iter->first;
+    }
     gProfileData.callstack.clear();
     gProfileData.callstack.reserve(PROFILE_DATA_CALLSTACK_SIZE);
 
@@ -477,6 +490,9 @@ static int lrealstartmemsafe(lua_State *L) {
     gfd = fd;
 
     gProfileData.total = 0;
+    for (auto iter = gProfileData.callstack.begin(); iter != gProfileData.callstack.end(); iter++) {
+        delete iter->first;
+    }
     gProfileData.callstack.clear();
     gProfileData.callstack.reserve(PROFILE_DATA_CALLSTACK_SIZE);
 
