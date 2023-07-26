@@ -661,7 +661,7 @@ extern "C" int luaopen_libplua(lua_State *L) {
 
             // for memory
             {"start_mem", lstart_mem},
-            {"stop",      lstop_mem},
+            {"stop_mem",  lstop_mem},
             {NULL, NULL},
     };
     luaL_newlib(L, l);
