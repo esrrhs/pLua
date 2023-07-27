@@ -465,6 +465,7 @@ lua_Alloc gOldAlloc = NULL;
 static const int MEM_PROFILE_RATE = 524288;  // 512K
 size_t gNextSample = 0;
 bool gOnlyAlloc = false;
+bool gIsInAlloc = false;
 uint64_t gRand = 0;
 
 // 移植自gperftools的Sampler::NextRandom
@@ -524,6 +525,12 @@ static void *my_lua_Alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
     LLOG("my_lua_Alloc %p %p %u %u", ud, ptr, osize, nsize);
 
     do {
+        // 防止重入，get_cur_callstack是可能触发lua内存分配的
+        if (gIsInAlloc) {
+            break;
+        }
+        gIsInAlloc = true;
+
         // check stop if set sample count
         if (gSampleCount != 0 && gSampleCount <= gProfileData.total) {
             LLOG("lrealstopmem...");
@@ -565,6 +572,7 @@ static void *my_lua_Alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
     } while (0);
 
     void *ret = gOldAlloc(ud, ptr, osize, nsize);
+    gIsInAlloc = false;
     return ret;
 }
 
@@ -604,6 +612,7 @@ static int lrealstartmemsafe(lua_State *L) {
         gRand = next_random(gRand);
     }
     gNextSample = gen_next_sample();
+    gIsInAlloc = false;
 
     return 0;
 }
@@ -625,6 +634,7 @@ extern "C" int lrealstartmem(lua_State *L, int count, int only_alloc, const char
     gFilename = file;
     gOldAlloc = NULL;
     gNextSample = 0;
+    gIsInAlloc = false;
 
     // lrealstartmem可能被注入调用，在StartMemHandlerHook里面执行具体的逻辑
     lua_sethook(gL, StartMemHandlerHook, LUA_MASKCOUNT, 1);
