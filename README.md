@@ -85,8 +85,8 @@ a) 首先获取进程中的Lua_State指针，比如进程的xxx.so调用了lua_s
 b) 加载libplua.so
 # ./hookso dlopen $PID ./libplua.so
 
-c) 执行libplua.so的lrealstartmem手动开启，等价于lrealstartmem(L, 0, 1, "./call.pro")
-# ./hookso call $PID libplua.so lrealstartmem i=123456 i=0 i=1 s="./call.pro"
+c) 执行libplua.so的lrealstartmem手动开启，等价于lrealstartmem(L, 0, "./call.pro")
+# ./hookso call $PID libplua.so lrealstartmem i=123456 i=0 s="./call.pro"
 
 c) 执行libclua.so的lrealstopmem手动关闭，等价于lrealstopmem(L)
 # ./hookso call $PID libplua.so lrealstopmem i=123456
@@ -137,7 +137,7 @@ c) 执行libclua.so的lrealstopmem手动关闭，等价于lrealstopmem(L)
 * 查看test1.lua的热点
 ![image](test/test1.png)
 
-* 查看test2.lua的内存分配
+* 查看test2.lua的内存分配大小
 ![image](test/test2.png)
   
 ## 其他
