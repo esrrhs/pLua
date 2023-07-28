@@ -67,8 +67,7 @@ c) 执行libclua.so的lrealstop手动关闭，等价于lrealstop(L)
 local p = require "libplua"
 -- 开启采样
 -- 参数1：采样时间（秒），0表示一直采样
--- 参数2：1表示只采用申请内存，0表示采样实际使用内存
--- 参数3：采样结果文件
+-- 参数2：采样结果文件名，会生成三个采样文件，分别代表内存分配大小、内存分配次数、内存占用大小
 p.start_mem(0, 1, "mem.pro")
 
 do_some_thing()
