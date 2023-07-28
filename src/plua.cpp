@@ -619,8 +619,8 @@ static void flush_mem() {
     flush_mem_alloc_count();
     flush_mem_usage();
 
-    int total = gProfileData.total;
-    LLOG("flush ok %d", gProfileData.total);
+    int total = gMemProfileData.total;
+    LLOG("flush ok %d", gMemProfileData.total);
 
     gMemProfileData.total = 0;
     for (auto iter = gMemProfileData.callstack.begin(); iter != gMemProfileData.callstack.end(); iter++) {
@@ -666,7 +666,7 @@ static void *my_lua_Alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
         gMemProfileData.isInAlloc = true;
 
         // check stop if set sample count
-        if (gSampleCount != 0 && gSampleCount <= gProfileData.total) {
+        if (gSampleCount != 0 && gSampleCount <= gMemProfileData.total) {
             LLOG("lrealstopmem...");
             lrealstopmem(gL);
             break;
@@ -689,7 +689,7 @@ static void *my_lua_Alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
             gMemProfileData.nextSample = gen_next_sample();
 
             // start profile
-            gProfileData.total++;
+            gMemProfileData.total++;
 
             CallStack cs;
             get_cur_callstack(gL, cs);
