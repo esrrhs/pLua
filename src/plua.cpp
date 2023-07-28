@@ -183,10 +183,10 @@ struct CallStack {
 };
 
 struct CallStackHash {
-    size_t operator()(CallStack *cs) const {
+    size_t operator()(const CallStack &cs) const {
         size_t hash = 0;
-        for (int i = 0; i < cs->depth; i++) {
-            int id = cs->stack[i];
+        for (int i = 0; i < cs.depth; i++) {
+            int id = cs.stack[i];
             hash = (hash << 8) | (hash >> (8 * (sizeof(hash) - 1)));
             hash += (id * 31) + (id * 7) + (id * 3);
         }
@@ -195,23 +195,21 @@ struct CallStackHash {
 };
 
 struct CallStackEqual {
-    bool operator()(CallStack *cs1, CallStack *cs2) const {
-        if (cs1->depth != cs2->depth) {
+    bool operator()(const CallStack &cs1, const CallStack &cs2) const {
+        if (cs1.depth != cs2.depth) {
             return false;
         }
-        return memcmp(cs1->stack, cs2->stack, sizeof(int) * cs1->depth) == 0;
+        return memcmp(cs1.stack, cs2.stack, sizeof(int) * cs1.depth) == 0;
     }
 };
 
 struct ProfileData {
-    std::unordered_map<CallStack *, int, CallStackHash, CallStackEqual> callstack;
-    int total;
+    std::unordered_map<CallStack, int, CallStackHash, CallStackEqual> callstack;
+    int total = 0;
+    int fd = 0;
 };
 
 ProfileData gProfileData;
-static const int PROFILE_DATA_CALLSTACK_SIZE = 10240;
-
-int gfd = 0;
 
 static void flush_file(int fd, const char *buf, size_t len) {
     while (len > 0) {
@@ -229,11 +227,11 @@ static void flush() {
     LLOG("flush...");
 
     for (auto iter = gProfileData.callstack.begin(); iter != gProfileData.callstack.end(); iter++) {
-        const CallStack &cs = *iter->first;
+        const CallStack &cs = iter->first;
         int count = iter->second;
 
-        flush_file(gfd, (const char *) &count, sizeof(count));
-        flush_file(gfd, (const char *) &cs, sizeof(cs));
+        flush_file(gProfileData.fd, (const char *) &count, sizeof(count));
+        flush_file(gProfileData.fd, (const char *) &cs, sizeof(cs));
     }
 
     int total_len = 0;
@@ -247,27 +245,24 @@ static void flush() {
 
         int len = str.length();
         len = len > MAX_FUNC_NAME_SIZE ? MAX_FUNC_NAME_SIZE : len;
-        flush_file(gfd, str.c_str(), len);
-        flush_file(gfd, (const char *) &len, sizeof(len));
+        flush_file(gProfileData.fd, str.c_str(), len);
+        flush_file(gProfileData.fd, (const char *) &len, sizeof(len));
 
-        flush_file(gfd, (const char *) &id, sizeof(id));
+        flush_file(gProfileData.fd, (const char *) &id, sizeof(id));
         total_len++;
     }
 
-    flush_file(gfd, (const char *) &total_len, sizeof(total_len));
+    flush_file(gProfileData.fd, (const char *) &total_len, sizeof(total_len));
 
     int total = gProfileData.total;
     LLOG("flush ok %d", gProfileData.total);
 
     gProfileData.total = 0;
-    for (auto iter = gProfileData.callstack.begin(); iter != gProfileData.callstack.end(); iter++) {
-        delete iter->first;
-    }
     gProfileData.callstack.clear();
 
-    if (gfd != 0) {
-        close(gfd);
-        gfd = 0;
+    if (gProfileData.fd != 0) {
+        close(gProfileData.fd);
+        gProfileData.fd = 0;
     }
 
     printf("pLua flush ok %d\n", total);
@@ -352,19 +347,12 @@ static void SignalHandlerHook(lua_State *L, lua_Debug *par) {
         lrealstop(L);
         return;
     }
-    gProfileData.total++;
 
     CallStack cs;
     get_cur_callstack(L, cs);
 
-    auto it = gProfileData.callstack.find(&cs);
-    if (it == gProfileData.callstack.end()) {
-        auto new_cs = new CallStack();
-        memcpy(new_cs, &cs, sizeof(cs));
-        gProfileData.callstack[new_cs] = 1;
-    } else {
-        it->second++;
-    }
+    gProfileData.callstack[cs]++;
+    gProfileData.total++;
 }
 
 static void SignalHandler(int sig, siginfo_t *sinfo, void *ucontext) {
@@ -399,7 +387,7 @@ static int lrealstartsafe(lua_State *L) {
         return -1;
     }
 
-    gfd = fd;
+    gProfileData.fd = fd;
 
     struct itimerval timer;
     timer.it_interval.tv_sec = 0;
@@ -412,11 +400,7 @@ static int lrealstartsafe(lua_State *L) {
     }
 
     gProfileData.total = 0;
-    for (auto iter = gProfileData.callstack.begin(); iter != gProfileData.callstack.end(); iter++) {
-        delete iter->first;
-    }
     gProfileData.callstack.clear();
-    gProfileData.callstack.reserve(PROFILE_DATA_CALLSTACK_SIZE);
 
     return 0;
 }
@@ -461,12 +445,63 @@ static int lstop(lua_State *L) {
 
 //////////////////////////////////mem profiler start////////////////////////////////////////
 
-lua_Alloc gOldAlloc = NULL;
 static const int MEM_PROFILE_RATE = 524288;  // 512K
-size_t gNextSample = 0;
-bool gOnlyAlloc = false;
-bool gIsInAlloc = false;
-uint64_t gRand = 0;
+
+struct MemInfo {
+    MemInfo() {}
+
+    MemInfo(uint32_t a, uint32_t as, uint32_t f, uint32_t fs) {
+        allocs = a;
+        alloc_size = as;
+        frees = f;
+        free_size = fs;
+    }
+
+    uint32_t allocs = 0;
+    uint32_t alloc_size = 0;
+    uint32_t frees = 0;
+    uint32_t free_size = 0;
+};
+
+struct CallStackPointerHash {
+    size_t operator()(CallStack *cs) const {
+        size_t hash = 0;
+        for (int i = 0; i < cs->depth; i++) {
+            int id = cs->stack[i];
+            hash = (hash << 8) | (hash >> (8 * (sizeof(hash) - 1)));
+            hash += (id * 31) + (id * 7) + (id * 3);
+        }
+        return hash;
+    }
+};
+
+struct CallStackPointerEqual {
+    bool operator()(CallStack *cs1, CallStack *cs2) const {
+        if (cs1->depth != cs2->depth) {
+            return false;
+        }
+        return memcmp(cs1->stack, cs2->stack, sizeof(int) * cs1->depth) == 0;
+    }
+};
+
+struct MemProfileData {
+    std::unordered_map<CallStack *, MemInfo, CallStackPointerHash, CallStackPointerEqual> callstack;
+    std::unordered_map<void *, CallStack *> ptr2Callstack;
+    int total = 0;
+    lua_Alloc oldAlloc = NULL;
+    size_t nextSample = 0;
+    bool isInAlloc = false;
+    uint64_t rand = 0;
+    int allocs = 0;
+    int64_t alloc_size = 0;
+    int frees = 0;
+    int64_t free_size = 0;
+    int alloc_size_fd = 0;
+    int alloc_count_fd = 0;
+    int usage_fd = 0;
+};
+
+MemProfileData gMemProfileData;
 
 // 移植自gperftools的Sampler::NextRandom
 static uint64_t next_random(uint64_t rnd) {
@@ -481,14 +516,14 @@ static uint64_t next_random(uint64_t rnd) {
 
 // 移植自gperftools的Sampler::PickNextSamplingPoint
 static size_t gen_next_sample() {
-    gRand = next_random(gRand);
+    gMemProfileData.rand = next_random(gMemProfileData.rand);
     // Take the top 26 bits as the random number
     // (This plus the 1<<58 sampling bound give a max possible step of
     // 5194297183973780480 bytes.)
     const uint64_t prng_mod_power = 48;  // Number of bits in prng
     // The uint32_t cast is to prevent a (hard-to-reproduce) NAN
     // under piii debug for some binaries.
-    double q = static_cast<uint32_t>(gRand >> (prng_mod_power - 26)) + 1.0;
+    double q = static_cast<uint32_t>(gMemProfileData.rand >> (prng_mod_power - 26)) + 1.0;
     // Put the computed p-value through the CDF of a geometric.
     double interval = (log2(q) - 26) * (-log(2.0) * MEM_PROFILE_RATE);
 
@@ -498,14 +533,113 @@ static size_t gen_next_sample() {
     return static_cast<size_t>(std::min<double>(interval, static_cast<double>(MAX_SSIZE)));
 }
 
+static void flush_mem_left(int fd) {
+    int total_len = 0;
+    for (auto iter = gString2Id.begin(); iter != gString2Id.end(); iter++) {
+        const std::string &str = iter->first;
+        int id = iter->second;
+
+        if (id < VALID_MIN_ID) {
+            continue;
+        }
+
+        int len = str.length();
+        len = len > MAX_FUNC_NAME_SIZE ? MAX_FUNC_NAME_SIZE : len;
+        flush_file(fd, str.c_str(), len);
+        flush_file(fd, (const char *) &len, sizeof(len));
+
+        flush_file(fd, (const char *) &id, sizeof(id));
+        total_len++;
+    }
+
+    flush_file(fd, (const char *) &total_len, sizeof(total_len));
+
+    if (fd != 0) {
+        close(fd);
+    }
+}
+
+static void flush_mem_alloc_size() {
+    int fd = gMemProfileData.alloc_size_fd;
+
+    for (auto iter = gMemProfileData.callstack.begin(); iter != gMemProfileData.callstack.end(); iter++) {
+        const CallStack &cs = *iter->first;
+        auto &mem_info = iter->second;
+
+        flush_file(fd, (const char *) &mem_info.alloc_size, sizeof(mem_info.alloc_size));
+        flush_file(fd, (const char *) &cs, sizeof(cs));
+    }
+
+    flush_mem_left(fd);
+    gMemProfileData.alloc_size_fd = 0;
+}
+
+static void flush_mem_alloc_count() {
+    int fd = gMemProfileData.alloc_count_fd;
+
+    for (auto iter = gMemProfileData.callstack.begin(); iter != gMemProfileData.callstack.end(); iter++) {
+        const CallStack &cs = *iter->first;
+        auto &mem_info = iter->second;
+
+        flush_file(fd, (const char *) &mem_info.allocs, sizeof(mem_info.allocs));
+        flush_file(fd, (const char *) &cs, sizeof(cs));
+    }
+
+    flush_mem_left(fd);
+    gMemProfileData.alloc_count_fd = 0;
+}
+
+static void flush_mem_usage() {
+    int fd = gMemProfileData.usage_fd;
+
+    for (auto iter = gMemProfileData.callstack.begin(); iter != gMemProfileData.callstack.end(); iter++) {
+        const CallStack &cs = *iter->first;
+        auto &mem_info = iter->second;
+        auto usage = mem_info.alloc_size - mem_info.free_size;
+        if (usage <= 0) {
+            continue;
+        }
+
+        flush_file(fd, (const char *) &usage, sizeof(usage));
+        flush_file(fd, (const char *) &cs, sizeof(cs));
+    }
+
+    flush_mem_left(fd);
+    gMemProfileData.usage_fd = 0;
+}
+
+static void flush_mem() {
+    if (gMemProfileData.total <= 0) {
+        return;
+    }
+
+    LLOG("flush...");
+
+    flush_mem_alloc_size();
+    flush_mem_alloc_count();
+    flush_mem_usage();
+
+    int total = gProfileData.total;
+    LLOG("flush ok %d", gProfileData.total);
+
+    gMemProfileData.total = 0;
+    for (auto iter = gMemProfileData.callstack.begin(); iter != gMemProfileData.callstack.end(); iter++) {
+        delete iter->first;
+    }
+    gMemProfileData.callstack.clear();
+    gMemProfileData.ptr2Callstack.clear();
+
+    printf("pLua flush ok %d\n", total);
+}
+
 static int lrealstopmemsafe(lua_State *L) {
     lua_sethook(L, 0, 0, 0);
 
-    lua_setallocf(L, gOldAlloc, NULL);
+    lua_setallocf(L, gMemProfileData.oldAlloc, NULL);
 
     gRunning = 0;
 
-    flush();
+    flush_mem();
 
     return 0;
 }
@@ -526,10 +660,10 @@ static void *my_lua_Alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
 
     do {
         // 防止重入，get_cur_callstack是可能触发lua内存分配的
-        if (gIsInAlloc) {
+        if (gMemProfileData.isInAlloc) {
             break;
         }
-        gIsInAlloc = true;
+        gMemProfileData.isInAlloc = true;
 
         // check stop if set sample count
         if (gSampleCount != 0 && gSampleCount <= gProfileData.total) {
@@ -538,19 +672,21 @@ static void *my_lua_Alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
             break;
         }
 
-        if (gOnlyAlloc) {
-            if (osize >= nsize) {
-                break;
-            }
-
+        if (osize < nsize) {
             // is alloc
             size_t alloc_sz = nsize - osize;
-            if (alloc_sz < gNextSample) {
-                gNextSample -= alloc_sz;
+
+            if (osize > 0 && ptr) {
+                // remove old pointer
+                gMemProfileData.ptr2Callstack.erase(ptr);
+            }
+
+            if (alloc_sz < gMemProfileData.nextSample) {
+                gMemProfileData.nextSample -= alloc_sz;
                 break;
             }
 
-            gNextSample = gen_next_sample();
+            gMemProfileData.nextSample = gen_next_sample();
 
             // start profile
             gProfileData.total++;
@@ -558,21 +694,46 @@ static void *my_lua_Alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
             CallStack cs;
             get_cur_callstack(gL, cs);
 
-            auto it = gProfileData.callstack.find(&cs);
-            if (it == gProfileData.callstack.end()) {
+            auto it = gMemProfileData.callstack.find(&cs);
+            CallStack *pointer_cs = 0;
+            if (it == gMemProfileData.callstack.end()) {
                 auto new_cs = new CallStack();
                 memcpy(new_cs, &cs, sizeof(cs));
-                gProfileData.callstack[new_cs] = alloc_sz;
+                gMemProfileData.callstack[new_cs] = MemInfo(1, alloc_sz, 0, 0);
+                pointer_cs = new_cs;
             } else {
-                it->second += alloc_sz;
+                auto &mem_info = it->second;
+                mem_info.allocs++;
+                mem_info.alloc_size += alloc_sz;
+                pointer_cs = it->first;
             }
-        } else {
-            // TODO
+
+            // add new pointer
+            gMemProfileData.ptr2Callstack[ptr] = pointer_cs;
+
+        } else if (osize > nsize) {
+            // free some memory
+            size_t free_sz = osize - nsize;
+
+            // remove old pointer
+            auto it = gMemProfileData.ptr2Callstack.find(ptr);
+            if (it != gMemProfileData.ptr2Callstack.end()) {
+                CallStack *cs = it->second;
+                gMemProfileData.ptr2Callstack.erase(it);
+
+                auto it2 = gMemProfileData.callstack.find(cs);
+                if (it2 != gMemProfileData.callstack.end()) {
+                    auto &mem_info = it2->second;
+                    mem_info.frees++;
+                    mem_info.free_size += free_sz;
+                }
+            }
         }
+
     } while (0);
 
-    void *ret = gOldAlloc(ud, ptr, osize, nsize);
-    gIsInAlloc = false;
+    void *ret = gMemProfileData.oldAlloc(ud, ptr, osize, nsize);
+    gMemProfileData.isInAlloc = false;
     return ret;
 }
 
@@ -588,31 +749,48 @@ static int lrealstartmemsafe(lua_State *L) {
         gId2String[i] = IGNORE_NAME[i];
     }
 
-    int fd = open(gFilename.c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0666);
+    int fd = open((std::string("ALLOC_SIZE_") + gFilename).c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0666);
     if (fd < 0) {
         LERR("open file fail %s", gFilename.c_str());
         return -1;
     }
+    gMemProfileData.alloc_size_fd = fd;
 
-    gfd = fd;
+    fd = open((std::string("ALLOC_COUNT_") + gFilename).c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0666);
+    if (fd < 0) {
+        LERR("open file fail %s", gFilename.c_str());
+        return -1;
+    }
+    gMemProfileData.alloc_count_fd = fd;
 
-    gProfileData.total = 0;
-    for (auto iter = gProfileData.callstack.begin(); iter != gProfileData.callstack.end(); iter++) {
+    fd = open((std::string("USAGE_") + gFilename).c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0666);
+    if (fd < 0) {
+        LERR("open file fail %s", gFilename.c_str());
+        return -1;
+    }
+    gMemProfileData.usage_fd = fd;
+
+    gMemProfileData.total = 0;
+    for (auto iter = gMemProfileData.callstack.begin(); iter != gMemProfileData.callstack.end(); iter++) {
         delete iter->first;
     }
-    gProfileData.callstack.clear();
-    gProfileData.callstack.reserve(PROFILE_DATA_CALLSTACK_SIZE);
+    gMemProfileData.callstack.clear();
+    gMemProfileData.ptr2Callstack.clear();
 
     // replace the realloc
-    gOldAlloc = lua_getallocf(L, NULL);
+    gMemProfileData.oldAlloc = lua_getallocf(L, NULL);
     lua_setallocf(L, my_lua_Alloc, NULL);
-    gRand = time(NULL);
+    gMemProfileData.rand = time(NULL);
     // Step it forward 20 times for good measure
     for (int i = 0; i < 20; i++) {
-        gRand = next_random(gRand);
+        gMemProfileData.rand = next_random(gMemProfileData.rand);
     }
-    gNextSample = gen_next_sample();
-    gIsInAlloc = false;
+    gMemProfileData.nextSample = gen_next_sample();
+    gMemProfileData.isInAlloc = false;
+    gMemProfileData.allocs = 0;
+    gMemProfileData.alloc_size = 0;
+    gMemProfileData.frees = 0;
+    gMemProfileData.free_size = 0;
 
     return 0;
 }
@@ -622,7 +800,7 @@ static void StartMemHandlerHook(lua_State *L, lua_Debug *par) {
     lrealstartmemsafe(L);
 }
 
-extern "C" int lrealstartmem(lua_State *L, int count, int only_alloc, const char *file) {
+extern "C" int lrealstartmem(lua_State *L, int count, const char *file) {
     if (gRunning) {
         LERR("start again, failed");
         return -1;
@@ -630,11 +808,10 @@ extern "C" int lrealstartmem(lua_State *L, int count, int only_alloc, const char
 
     gL = L;
     gSampleCount = count;
-    gOnlyAlloc = (only_alloc != 0);
     gFilename = file;
-    gOldAlloc = NULL;
-    gNextSample = 0;
-    gIsInAlloc = false;
+    gMemProfileData.oldAlloc = NULL;
+    gMemProfileData.nextSample = 0;
+    gMemProfileData.isInAlloc = false;
 
     // lrealstartmem可能被注入调用，在StartMemHandlerHook里面执行具体的逻辑
     lua_sethook(gL, StartMemHandlerHook, LUA_MASKCOUNT, 1);
@@ -646,9 +823,8 @@ extern "C" int lrealstartmem(lua_State *L, int count, int only_alloc, const char
 
 static int lstart_mem(lua_State *L) {
     int count = (int) lua_tointeger(L, 1);
-    int only_alloc = (int) lua_tointeger(L, 2);
-    const char *file = lua_tostring(L, 3);
-    int ret = lrealstartmem(L, count, only_alloc, file);
+    const char *file = lua_tostring(L, 2);
+    int ret = lrealstartmem(L, count, file);
     lua_pushinteger(L, ret);
     return 1;
 }
