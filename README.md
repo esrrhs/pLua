@@ -19,12 +19,12 @@ Lua 性能分析工具
 ## 编译
 * 安装lua
 * 编译插件libplua.so及tools
-``` bash
+```shell
 # ./build.sh
 ```
 * 安装火焰图的依赖项
 ```shell
-yum install perl-open.noarch
+# yum install perl-open.noarch
 ```
 
 ## 使用
