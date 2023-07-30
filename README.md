@@ -108,7 +108,7 @@ c) 执行libclua.so的lrealstopmem手动关闭，等价于lrealstopmem(L)
 #### 查看test_cpu.lua的热点
 ![image](test/call.png)
 
-#### 查看test_mem.lua的内存采用
+#### 查看test_mem.lua的内存采样
 * 内存分配次数
 ![image](test/ALLOC_COUNT_mem.png)
 * 内存分配大小
