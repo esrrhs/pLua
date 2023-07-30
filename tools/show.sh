@@ -1,6 +1,8 @@
 #! /bin/sh
 
-for NAME in $(ls -l *.pro | awk '{print $9}' | sed "s/.pro$//g"); do
+INPUT=$1
+
+for NAME in $(ls -l $INPUT/*.pro | awk '{print $9}' | sed "s/.pro$//g"); do
   
     echo "show " $NAME
     ./plua -i $NAME.pro -pprof $NAME.prof
@@ -18,13 +20,13 @@ for NAME in $(ls -l *.pro | awk '{print $9}' | sed "s/.pro$//g"); do
       echo "$NAME png fail"
       exit 1
     fi
-	./pprof --collapsed $NAME.prof > $NAME.fl
-	if [ $? -ne 0 ]; then
+    ./pprof --collapsed $NAME.prof > $NAME.fl
+    if [ $? -ne 0 ]; then
       echo "$NAME collapsed fail"
       exit 1
     fi
-	./flamegraph.pl $NAME.fl > $NAME.svg
-	if [ $? -ne 0 ]; then
+    ./flamegraph.pl $NAME.fl > $NAME.svg
+    if [ $? -ne 0 ]; then
       echo "$NAME svg fail"
       exit 1
     fi

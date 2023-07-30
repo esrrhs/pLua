@@ -1,7 +1,7 @@
 #! /bin/sh
 dir=$(cd `dirname $0`;pwd)
 projectdir=$dir
-builddir="$projectdir/debug"
+builddir="$projectdir/build"
 rundir="$projectdir/bin"
 luadir="$projectdir/dep/lua-5.3.6"
 lua="$projectdir/dep/lua-5.3.6.tar.gz"
@@ -24,3 +24,11 @@ fi
 
 cmake ../
 make
+
+cd ../tools
+go build plua.go
+go build png.go
+
+chmod a+x pprof
+chmod a+x *.pl
+chmod a+x *.sh
