@@ -26,10 +26,12 @@ end
 
 local p = require "libplua"
 
-p.start_mem(0, 1, "mem.pro")
+p.start_mem(0, "mem.pro")
 
 for i = 1, 3 do
     test()
 end
+
+collectgarbage("collect")
 
 p.stop_mem()
