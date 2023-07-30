@@ -595,7 +595,7 @@ static void flush_mem_usage() {
     for (auto iter = gMemProfileData.callstack.begin(); iter != gMemProfileData.callstack.end(); iter++) {
         const CallStack &cs = *iter->first;
         auto &mem_info = iter->second;
-        auto usage = mem_info.alloc_size - mem_info.free_size;
+        auto usage = (int) mem_info.alloc_size - (int) mem_info.free_size;
         if (usage <= 0) {
             continue;
         }
@@ -656,85 +656,112 @@ extern "C" int lrealstopmem(lua_State *L) {
 }
 
 static void *my_lua_Alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
-    LLOG("my_lua_Alloc %p %p %u %u", ud, ptr, osize, nsize);
+    //LLOG("my_lua_Alloc %p %p %u %u", ud, ptr, osize, nsize);
 
-    do {
-        // 防止重入，get_cur_callstack是可能触发lua内存分配的
-        if (gMemProfileData.isInAlloc) {
-            break;
-        }
-        gMemProfileData.isInAlloc = true;
+    // 防止重入，get_cur_callstack是可能触发lua内存分配的
+    if (gMemProfileData.isInAlloc) {
+        return gMemProfileData.oldAlloc(ud, ptr, osize, nsize);
+    }
+    gMemProfileData.isInAlloc = true;
 
-        // check stop if set sample count
-        if (gSampleCount != 0 && gSampleCount <= gMemProfileData.total) {
-            LLOG("lrealstopmem...");
-            lrealstopmem(gL);
-            break;
-        }
+    // check stop if set sample count
+    if (gSampleCount != 0 && gSampleCount <= gMemProfileData.total) {
+        LLOG("lrealstopmem...");
+        lrealstopmem(gL);
+        gMemProfileData.isInAlloc = false;
+        return gMemProfileData.oldAlloc(ud, ptr, osize, nsize);
+    }
 
-        if (osize < nsize) {
-            // is alloc
-            size_t alloc_sz = nsize - osize;
+    if (osize < nsize) {
 
-            if (osize > 0 && ptr) {
-                // remove old pointer
-                gMemProfileData.ptr2Callstack.erase(ptr);
-            }
+        // is alloc
+        size_t alloc_sz = nsize - osize;
 
-            if (alloc_sz < gMemProfileData.nextSample) {
-                gMemProfileData.nextSample -= alloc_sz;
-                break;
-            }
-
-            gMemProfileData.nextSample = gen_next_sample();
-
-            // start profile
-            gMemProfileData.total++;
-
-            CallStack cs;
-            get_cur_callstack(gL, cs);
-
-            auto it = gMemProfileData.callstack.find(&cs);
-            CallStack *pointer_cs = 0;
-            if (it == gMemProfileData.callstack.end()) {
-                auto new_cs = new CallStack();
-                memcpy(new_cs, &cs, sizeof(cs));
-                gMemProfileData.callstack[new_cs] = MemInfo(1, alloc_sz, 0, 0);
-                pointer_cs = new_cs;
-            } else {
-                auto &mem_info = it->second;
-                mem_info.allocs++;
-                mem_info.alloc_size += alloc_sz;
-                pointer_cs = it->first;
-            }
-
-            // add new pointer
-            gMemProfileData.ptr2Callstack[ptr] = pointer_cs;
-
-        } else if (osize > nsize) {
-            // free some memory
-            size_t free_sz = osize - nsize;
-
+        if (osize > 0 && ptr) {
             // remove old pointer
-            auto it = gMemProfileData.ptr2Callstack.find(ptr);
-            if (it != gMemProfileData.ptr2Callstack.end()) {
-                CallStack *cs = it->second;
-                gMemProfileData.ptr2Callstack.erase(it);
-
-                auto it2 = gMemProfileData.callstack.find(cs);
-                if (it2 != gMemProfileData.callstack.end()) {
-                    auto &mem_info = it2->second;
-                    mem_info.frees++;
-                    mem_info.free_size += free_sz;
-                }
-            }
+            gMemProfileData.ptr2Callstack.erase(ptr);
         }
 
-    } while (0);
+        if (alloc_sz < gMemProfileData.nextSample) {
+            gMemProfileData.nextSample -= alloc_sz;
+            gMemProfileData.isInAlloc = false;
+            return gMemProfileData.oldAlloc(ud, ptr, osize, nsize);
+        }
 
-    void *ret = gMemProfileData.oldAlloc(ud, ptr, osize, nsize);
-    gMemProfileData.isInAlloc = false;
-    return ret;
+        gMemProfileData.nextSample = gen_next_sample();
+
+        // start profile
+        gMemProfileData.total++;
+
+        CallStack cs;
+        get_cur_callstack(gL, cs);
+
+        auto it = gMemProfileData.callstack.find(&cs);
+        CallStack *pointer_cs = 0;
+        if (it == gMemProfileData.callstack.end()) {
+            auto new_cs = new CallStack();
+            memcpy(new_cs, &cs, sizeof(cs));
+            gMemProfileData.callstack[new_cs] = MemInfo(1, alloc_sz, 0, 0);
+            pointer_cs = new_cs;
+        } else {
+            auto &mem_info = it->second;
+            mem_info.allocs++;
+            mem_info.alloc_size += alloc_sz;
+            pointer_cs = it->first;
+        }
+
+        gMemProfileData.allocs++;
+        gMemProfileData.alloc_size += alloc_sz;
+
+        void *ret = gMemProfileData.oldAlloc(ud, ptr, osize, nsize);
+
+        // add new pointer
+        gMemProfileData.ptr2Callstack[ret] = pointer_cs;
+
+        LLOG("alloc %p %u %u %u %u", ret, osize, nsize, gMemProfileData.allocs, gMemProfileData.alloc_size);
+
+        gMemProfileData.isInAlloc = false;
+        return ret;
+
+    } else if (osize > nsize) {
+
+        // free some memory
+        size_t free_sz = osize - nsize;
+
+        // remove old pointer
+        auto it = gMemProfileData.ptr2Callstack.find(ptr);
+        if (it == gMemProfileData.ptr2Callstack.end()) {
+            gMemProfileData.isInAlloc = false;
+            return gMemProfileData.oldAlloc(ud, ptr, osize, nsize);
+        }
+
+        CallStack *cs = it->second;
+        gMemProfileData.ptr2Callstack.erase(it);
+
+        auto it2 = gMemProfileData.callstack.find(cs);
+        if (it2 != gMemProfileData.callstack.end()) {
+            auto &mem_info = it2->second;
+            mem_info.frees++;
+            mem_info.free_size += free_sz;
+
+            gMemProfileData.frees++;
+            gMemProfileData.free_size += free_sz;
+
+            LLOG("free %p %u %u %u %u", ptr, osize, nsize, gMemProfileData.frees, gMemProfileData.free_size);
+        }
+
+        void *ret = gMemProfileData.oldAlloc(ud, ptr, osize, nsize);
+        if (nsize > 0 && ret) {
+            // add new pointer
+            gMemProfileData.ptr2Callstack[ret] = cs;
+        }
+
+        gMemProfileData.isInAlloc = false;
+        return ret;
+    } else {
+        gMemProfileData.isInAlloc = false;
+        return gMemProfileData.oldAlloc(ud, ptr, osize, nsize);
+    }
 }
 
 static int lrealstartmemsafe(lua_State *L) {

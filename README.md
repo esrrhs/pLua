@@ -14,18 +14,17 @@ Lua 性能分析工具
 - 简单，只需几行代码，即可输出结果，或通过[hookso](https://github.com/esrrhs/hookso)注入，不用修改代码
 - 准确，相比lua hook，定时采样的方式更能准确捕获lua执行的热点，使用ITIMER_PROF剔除sleep等堆栈
 - 轻量，因为是采样的，相比直接按行lua hook，能最小程度影响宿主程序的运行
-- 直观，输出调用图，能直观的看到热点和调用关系，可兼容gperftools的pprof工具，可生成火焰图
+- 直观，输出调用图，能直观的看到热点和调用关系，可兼容[gperftools](https://github.com/gperftools/gperftools)的pprof工具，可生成[火焰图](https://github.com/brendangregg/FlameGraph)
 
 ## 编译
-* 安装lua 5.3
-* 编译插件libplua.so
+* 安装lua
+* 编译插件libplua.so及tools
 ``` bash
 # ./build.sh
 ```
-* 编译解析器plua
-``` bash
-# go get github.com/goccy/go-graphviz
-# go build plua.go
+* 安装火焰图的依赖项
+```shell
+yum install perl-open.noarch
 ```
 
 ## 使用
@@ -46,7 +45,7 @@ p.stop()
 
 ```
 * 或者用[hookso](https://github.com/esrrhs/hookso)注入
-```
+```shell
 a) 首先获取进程中的Lua_State指针，比如进程的xxx.so调用了lua_settop(L)函数，那么就取第一个参数
 # ./hookso arg $PID xxx.so lua_settop 1 
 123456
@@ -68,7 +67,7 @@ local p = require "libplua"
 -- 开启采样
 -- 参数1：采样时间（秒），0表示一直采样
 -- 参数2：采样结果文件名，会生成三个采样文件，分别代表内存分配大小、内存分配次数、内存占用大小
-p.start_mem(0, 1, "mem.pro")
+p.start_mem(0, "mem.pro")
 
 do_some_thing()
 
@@ -77,7 +76,7 @@ p.stop_mem()
 
 ```
 * 或者用[hookso](https://github.com/esrrhs/hookso)注入
-```
+```shell
 a) 首先获取进程中的Lua_State指针，比如进程的xxx.so调用了lua_settop(L)函数，那么就取第一个参数
 # ./hookso arg $PID xxx.so lua_settop 1 
 123456
@@ -91,54 +90,31 @@ c) 执行libplua.so的lrealstartmem手动开启，等价于lrealstartmem(L, 0, "
 c) 执行libclua.so的lrealstopmem手动关闭，等价于lrealstopmem(L)
 # ./hookso call $PID libplua.so lrealstopmem i=123456
 ```
-#### 生成采样结果
-* 查看生成的call.pro
-```
-# 转成txt格式
-# ./plua -i call.pro -text
-
-# 转成dot格式
-# ./plua -i call.pro -dot
-
-# 转成svg格式
-# ./plua -i call.pro -svg output.svg
-
-# 转成png格式
-# ./plua -i call.pro -png output.png
-```
-#### 使用pprof查看结果
-```
-# 转成pprof格式
-# ./plua -i call.pro -pprof call.pprof
-
-# 输出pprof的text、dot、png等等
-# pprof --text call.pprof
-# pprof --dot call.pprof > call.dot
-# pprof --png call.pprof > call.png
-```
-
-#### 使用[火焰图](https://github.com/brendangregg/FlameGraph)查看结果
-```
-# 转成pprof格式
-# ./plua -i call.pro -pprof call.pprof
-
-# 输出pprof的text、dot、png等等
-# pprof --collapsed call.prof > call.fl
-# flamegraph.pl call.fl > call.svg
-```
 
 ## 示例
-* 运行lua
-```bash
-# lua test1.lua
-# lua test2.lua
+#### 运行test目录下的lua
+```shell
+# lua test_cpu.lua
+# lua test_mem.lua
 ```
 
-* 查看test1.lua的热点
-![image](test/test1.png)
+#### 生成可视化结果
+使用tools目录下的show.sh脚本生成gperftools风格png及火焰图
+```shell
+# cd tools
+# ./show.sh ../test
+```
 
-* 查看test2.lua的内存分配大小
-![image](test/test2.png)
-  
+#### 查看test_cpu.lua的热点
+![image](test/call.png)
+
+#### 查看test_mem.lua的内存采用
+* 内存分配次数
+![image](test/ALLOC_COUNT_mem.png)
+* 内存分配大小
+![image](test/ALLOC_SIZE_mem.png)
+* 内存占用大小
+![image](test/USAGE_mem.png)
+
 ## 其他
 [lua全家桶](https://github.com/esrrhs/lua-family-bucket)
