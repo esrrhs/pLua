@@ -26,8 +26,8 @@ cmake ../
 make
 
 cd ../tools
-go build plua.go
-go build png.go
+GO111MODULE=off go build plua.go
+GO111MODULE=off go build png.go
 
 chmod a+x pprof
 chmod a+x *.pl
