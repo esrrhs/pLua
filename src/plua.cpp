@@ -764,6 +764,15 @@ static void *my_lua_Alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
     }
 }
 
+static std::string get_mem_filename(std::string path, const std::string &suffix) {
+    auto pos = path.find_last_of('.');
+    if (pos == std::string::npos) {
+        return path;
+    }
+    path.insert(pos, suffix);
+    return path;
+}
+
 static int lrealstartmemsafe(lua_State *L) {
     if (gRunning) {
         LERR("start again, failed");
@@ -776,21 +785,21 @@ static int lrealstartmemsafe(lua_State *L) {
         gId2String[i] = IGNORE_NAME[i];
     }
 
-    int fd = open((std::string("ALLOC_SIZE_") + gFilename).c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0666);
+    int fd = open(get_mem_filename(gFilename, "_ALLOC_SIZE").c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0666);
     if (fd < 0) {
         LERR("open file fail %s", gFilename.c_str());
         return -1;
     }
     gMemProfileData.alloc_size_fd = fd;
 
-    fd = open((std::string("ALLOC_COUNT_") + gFilename).c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0666);
+    fd = open(get_mem_filename(gFilename, "_ALLOC_COUNT").c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0666);
     if (fd < 0) {
         LERR("open file fail %s", gFilename.c_str());
         return -1;
     }
     gMemProfileData.alloc_count_fd = fd;
 
-    fd = open((std::string("USAGE_") + gFilename).c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0666);
+    fd = open(get_mem_filename(gFilename, "_USAGE").c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0666);
     if (fd < 0) {
         LERR("open file fail %s", gFilename.c_str());
         return -1;
