@@ -1,37 +1,40 @@
 package.cpath = "../bin/?.so;" .. package.cpath
 
-local t = {}
+t = {}
 
-function test_insert(n)
-    table.insert(t, n)
+function table_insert1(n)
+    local t1 = {}
+    table.insert(t1, n)
+    table.insert(t, tostring(n))
 end
 
-function string_format(n)
-    local str = string.format("%d", n)
+function table_insert2(n)
+    local t1 = {}
+    table.insert(t1, n)
+    table.insert(t, tostring(n))
+    table_insert1(n)
 end
 
-function closure(n)
-    return function()
-        local j = n
-    end
+function table_insert3(n)
+    local t1 = {}
+    table.insert(t1, n)
+    table.insert(t, tostring(n))
+    table_insert2(n)
 end
 
 function test()
     for i = 1, 1000000 do
-        test_insert(i)
-        string_format(i)
-        closure(i)
+        table_insert1(i)
+        table_insert2(i)
+        table_insert3(i)
     end
-    print("done")
 end
 
 local p = require "libplua"
 
 p.start_mem(0, "mem.pro")
 
-for i = 1, 3 do
-    test()
-end
+test()
 
 collectgarbage("collect")
 
