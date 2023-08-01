@@ -1,24 +1,26 @@
 package.cpath = "../bin/?.so;" .. package.cpath
 
-t = {}
+gt1 = {}
+gt2 = {}
+gt3 = {}
 
 function table_insert1(n)
-    local t1 = {}
-    table.insert(t1, n)
-    table.insert(t, tostring(n))
+    local t = {}
+    table.insert(t, n)
+    table.insert(gt1, tostring(n))
 end
 
 function table_insert2(n)
-    local t1 = {}
-    table.insert(t1, n)
-    table.insert(t, tostring(n))
+    local t = {}
+    table.insert(t, n)
+    table.insert(gt2, tostring(n))
     table_insert1(n)
 end
 
 function table_insert3(n)
-    local t1 = {}
-    table.insert(t1, n)
-    table.insert(t, tostring(n))
+    local t = {}
+    table.insert(t, n)
+    table.insert(gt3, tostring(n))
     table_insert2(n)
 end
 
