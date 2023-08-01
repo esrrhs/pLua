@@ -28,7 +28,7 @@ end
 
 function test22(n)
 
-	for i = 1, 1000 do
+	for i = 1, 2000 do
 		local j = i*n
 	end
 
@@ -36,7 +36,7 @@ end
 
 function test23(n)
 
-	for i = 1, 1000 do
+	for i = 1, 3000 do
 		local j = i*n
 	end
 
@@ -44,7 +44,7 @@ end
 
 function test24(n)
 
-	for i = 1, 1000 do
+	for i = 1, 4000 do
 		local j = i*n
 	end
 
@@ -52,7 +52,7 @@ end
 
 function test25(n)
 
-	for i = 1, 1000 do
+	for i = 1, 5000 do
 		local j = i*n
 	end
 
