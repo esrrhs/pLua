@@ -490,7 +490,6 @@ struct MemProfileData {
     int total = 0;
     lua_Alloc oldAlloc = NULL;
     size_t nextSample = 0;
-    bool isInAlloc = false;
     uint64_t rand = 0;
     int allocs = 0;
     int64_t alloc_size = 0;
@@ -499,6 +498,9 @@ struct MemProfileData {
     int alloc_size_fd = 0;
     int alloc_count_fd = 0;
     int usage_fd = 0;
+    bool is_in_hook = false;
+    void *hook_alloc_ptr = 0;
+    size_t hook_alloc_sz = 0;
 };
 
 MemProfileData gMemProfileData;
@@ -655,24 +657,59 @@ extern "C" int lrealstopmem(lua_State *L) {
     return 0;
 }
 
+static void my_lua_Alloc_safe() {
+    gMemProfileData.is_in_hook = true;
+
+    auto hook_alloc_ptr = gMemProfileData.hook_alloc_ptr;
+    auto hook_alloc_sz = gMemProfileData.hook_alloc_sz;
+
+    CallStack cs;
+    get_cur_callstack(gL, cs);  // 内部可能触发再次分配内存
+
+    auto it = gMemProfileData.callstack.find(&cs);
+    CallStack *pointer_cs = 0;
+    if (it == gMemProfileData.callstack.end()) {
+        auto new_cs = new CallStack();
+        memcpy(new_cs, &cs, sizeof(cs));
+        gMemProfileData.callstack[new_cs] = MemInfo(1, hook_alloc_sz, 0, 0);
+        pointer_cs = new_cs;
+    } else {
+        auto &mem_info = it->second;
+        mem_info.allocs++;
+        mem_info.alloc_size += hook_alloc_sz;
+        pointer_cs = it->first;
+    }
+
+    gMemProfileData.allocs++;
+    gMemProfileData.alloc_size += hook_alloc_sz;
+
+    // add new pointer
+    gMemProfileData.ptr2Callstack[hook_alloc_ptr] = pointer_cs;
+
+    LLOG("alloc %p %u %u %u", hook_alloc_ptr, hook_alloc_sz, gMemProfileData.allocs, gMemProfileData.alloc_size);
+
+    gMemProfileData.is_in_hook = false;
+}
+
+static void AllocMemHandlerHook(lua_State *L, lua_Debug *par) {
+    my_lua_Alloc_safe();
+    lua_sethook(L, 0, 0, 0);
+}
+
 static void *my_lua_Alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
     //LLOG("my_lua_Alloc %p %p %u %u", ud, ptr, osize, nsize);
 
-    // 防止重入，get_cur_callstack是可能触发lua内存分配的
-    if (gMemProfileData.isInAlloc) {
-        return gMemProfileData.oldAlloc(ud, ptr, osize, nsize);
-    }
-    gMemProfileData.isInAlloc = true;
-
-    // check stop if set sample count
-    if (gSampleCount != 0 && gSampleCount <= gMemProfileData.total) {
-        LLOG("lrealstopmem...");
-        lrealstopmem(gL);
-        gMemProfileData.isInAlloc = false;
-        return gMemProfileData.oldAlloc(ud, ptr, osize, nsize);
-    }
-
     if (osize < nsize) {
+        if (gMemProfileData.is_in_hook) {
+            return gMemProfileData.oldAlloc(ud, ptr, osize, nsize);
+        }
+
+        // check stop if set sample count
+        if (gSampleCount != 0 && gSampleCount <= gMemProfileData.total) {
+            LLOG("lrealstopmem...");
+            lrealstopmem(gL);
+            return gMemProfileData.oldAlloc(ud, ptr, osize, nsize);
+        }
 
         // is alloc
         size_t alloc_sz = nsize - osize;
@@ -682,9 +719,9 @@ static void *my_lua_Alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
             gMemProfileData.ptr2Callstack.erase(ptr);
         }
 
+        // 是否命中采样
         if (alloc_sz < gMemProfileData.nextSample) {
             gMemProfileData.nextSample -= alloc_sz;
-            gMemProfileData.isInAlloc = false;
             return gMemProfileData.oldAlloc(ud, ptr, osize, nsize);
         }
 
@@ -693,36 +730,16 @@ static void *my_lua_Alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
         // start profile
         gMemProfileData.total++;
 
-        CallStack cs;
-        get_cur_callstack(gL, cs);
+        // 防止重入，get_cur_callstack是可能触发lua内存分配的。当再次重入，只是设置下hook，等原来hook退出后清空
+        lua_sethook(gL, AllocMemHandlerHook, LUA_MASKCOUNT, 1);
 
-        auto it = gMemProfileData.callstack.find(&cs);
-        CallStack *pointer_cs = 0;
-        if (it == gMemProfileData.callstack.end()) {
-            auto new_cs = new CallStack();
-            memcpy(new_cs, &cs, sizeof(cs));
-            gMemProfileData.callstack[new_cs] = MemInfo(1, alloc_sz, 0, 0);
-            pointer_cs = new_cs;
-        } else {
-            auto &mem_info = it->second;
-            mem_info.allocs++;
-            mem_info.alloc_size += alloc_sz;
-            pointer_cs = it->first;
-        }
+        void *alloc_ptr = gMemProfileData.oldAlloc(ud, ptr, osize, nsize);
 
-        gMemProfileData.allocs++;
-        gMemProfileData.alloc_size += alloc_sz;
+        // 记录参数
+        gMemProfileData.hook_alloc_ptr = alloc_ptr;
+        gMemProfileData.hook_alloc_sz = alloc_sz;
 
-        void *ret = gMemProfileData.oldAlloc(ud, ptr, osize, nsize);
-
-        // add new pointer
-        gMemProfileData.ptr2Callstack[ret] = pointer_cs;
-
-        LLOG("alloc %p %u %u %u %u", ret, osize, nsize, gMemProfileData.allocs, gMemProfileData.alloc_size);
-
-        gMemProfileData.isInAlloc = false;
-        return ret;
-
+        return alloc_ptr;
     } else if (osize > nsize) {
 
         // free some memory
@@ -731,7 +748,6 @@ static void *my_lua_Alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
         // remove old pointer
         auto it = gMemProfileData.ptr2Callstack.find(ptr);
         if (it == gMemProfileData.ptr2Callstack.end()) {
-            gMemProfileData.isInAlloc = false;
             return gMemProfileData.oldAlloc(ud, ptr, osize, nsize);
         }
 
@@ -756,10 +772,8 @@ static void *my_lua_Alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
             gMemProfileData.ptr2Callstack[ret] = cs;
         }
 
-        gMemProfileData.isInAlloc = false;
         return ret;
     } else {
-        gMemProfileData.isInAlloc = false;
         return gMemProfileData.oldAlloc(ud, ptr, osize, nsize);
     }
 }
@@ -822,11 +836,13 @@ static int lrealstartmemsafe(lua_State *L) {
         gMemProfileData.rand = next_random(gMemProfileData.rand);
     }
     gMemProfileData.nextSample = gen_next_sample();
-    gMemProfileData.isInAlloc = false;
     gMemProfileData.allocs = 0;
     gMemProfileData.alloc_size = 0;
     gMemProfileData.frees = 0;
     gMemProfileData.free_size = 0;
+    gMemProfileData.is_in_hook = false;
+    gMemProfileData.hook_alloc_ptr = 0;
+    gMemProfileData.hook_alloc_sz = 0;
 
     return 0;
 }
@@ -847,7 +863,6 @@ extern "C" int lrealstartmem(lua_State *L, int count, const char *file) {
     gFilename = file;
     gMemProfileData.oldAlloc = NULL;
     gMemProfileData.nextSample = 0;
-    gMemProfileData.isInAlloc = false;
 
     // lrealstartmem可能被注入调用，在StartMemHandlerHook里面执行具体的逻辑
     lua_sethook(gL, StartMemHandlerHook, LUA_MASKCOUNT, 1);
