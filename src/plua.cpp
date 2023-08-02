@@ -269,8 +269,6 @@ static void flush() {
 }
 
 static int lrealstopsafe(lua_State *L) {
-    lua_sethook(L, 0, 0, 0);
-
     gRunning = 0;
 
     struct itimerval timer;
@@ -285,17 +283,13 @@ static int lrealstopsafe(lua_State *L) {
 
     flush();
 
+    lua_sethook(L, 0, 0, 0);
+
     return 0;
 }
 
-static void StopHandlerHook(lua_State *L, lua_Debug *par) {
-    lua_sethook(L, 0, 0, 0);
-    lrealstopsafe(L);
-}
-
 extern "C" int lrealstop(lua_State *L) {
-    // lrealstop可能被注入调用，在StopHandlerHook里面执行具体的逻辑
-    lua_sethook(gL, StopHandlerHook, LUA_MASKCOUNT, 1);
+    gRunning = 0;
     return 0;
 }
 
@@ -338,13 +332,13 @@ static void get_cur_callstack(lua_State *L, CallStack &cs) {
 }
 
 static void SignalHandlerHook(lua_State *L, lua_Debug *par) {
+    lua_sethook(L, 0, 0, 0);
+
     LLOG("Hook...");
 
-    lua_sethook(gL, 0, 0, 0);
-
-    if (gSampleCount != 0 && gSampleCount <= gProfileData.total) {
+    if (gRunning == 0 || (gSampleCount != 0 && gSampleCount <= gProfileData.total)) {
         LLOG("lrealstop...");
-        lrealstop(L);
+        lrealstopsafe(L);
         return;
     }
 
@@ -406,8 +400,8 @@ static int lrealstartsafe(lua_State *L) {
 }
 
 static void StartHandlerHook(lua_State *L, lua_Debug *par) {
-    lua_sethook(L, 0, 0, 0);
     lrealstartsafe(L);
+    lua_sethook(L, 0, 0, 0);
 }
 
 extern "C" int lrealstart(lua_State *L, int second, const char *file) {
@@ -439,6 +433,7 @@ static int lstart(lua_State *L) {
 static int lstop(lua_State *L) {
     LLOG("lstop %s", gFilename.c_str());
     int ret = lrealstop(L);
+    lrealstopsafe(L);
     lua_pushinteger(L, ret);
     return 1;
 }
@@ -635,7 +630,6 @@ static void flush_mem() {
 }
 
 static int lrealstopmemsafe(lua_State *L) {
-    lua_sethook(L, 0, 0, 0);
 
     lua_setallocf(L, gMemProfileData.oldAlloc, NULL);
 
@@ -643,17 +637,13 @@ static int lrealstopmemsafe(lua_State *L) {
 
     flush_mem();
 
+    lua_sethook(L, 0, 0, 0);
+
     return 0;
 }
 
-static void StopMemHandlerHook(lua_State *L, lua_Debug *par) {
-    lua_sethook(L, 0, 0, 0);
-    lrealstopmemsafe(L);
-}
-
 extern "C" int lrealstopmem(lua_State *L) {
-    // lrealstopmem可能被注入调用，在StopMemHandlerHook里面执行具体的逻辑
-    lua_sethook(gL, StopMemHandlerHook, LUA_MASKCOUNT, 1);
+    gRunning = 0;
     return 0;
 }
 
@@ -699,6 +689,11 @@ static void AllocMemHandlerHook(lua_State *L, lua_Debug *par) {
 static void *my_lua_Alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
     //LLOG("my_lua_Alloc %p %p %u %u", ud, ptr, osize, nsize);
     size_t realosize = (ptr) ? osize : 0;
+
+    if (gRunning == 0) {
+        lrealstopmemsafe(gL);
+        return gMemProfileData.oldAlloc(ud, ptr, osize, nsize);
+    }
 
     if (realosize < nsize) {
         if (gMemProfileData.is_in_hook) {
@@ -849,8 +844,8 @@ static int lrealstartmemsafe(lua_State *L) {
 }
 
 static void StartMemHandlerHook(lua_State *L, lua_Debug *par) {
-    lua_sethook(L, 0, 0, 0);
     lrealstartmemsafe(L);
+    lua_sethook(L, 0, 0, 0);
 }
 
 extern "C" int lrealstartmem(lua_State *L, int count, const char *file) {
@@ -884,6 +879,7 @@ static int lstart_mem(lua_State *L) {
 static int lstop_mem(lua_State *L) {
     LLOG("lstop %s", gFilename.c_str());
     int ret = lrealstopmem(L);
+    lrealstopmemsafe(L);
     lua_pushinteger(L, ret);
     return 1;
 }
@@ -900,6 +896,7 @@ extern "C" int luaopen_libplua(lua_State *L) {
             // for memory
             {"start_mem", lstart_mem},
             {"stop_mem",  lstop_mem},
+
             {NULL, NULL},
     };
     luaL_newlib(L, l);
