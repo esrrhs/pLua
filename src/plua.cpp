@@ -698,8 +698,9 @@ static void AllocMemHandlerHook(lua_State *L, lua_Debug *par) {
 
 static void *my_lua_Alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
     //LLOG("my_lua_Alloc %p %p %u %u", ud, ptr, osize, nsize);
+    size_t realosize = (ptr) ? osize : 0;
 
-    if (osize < nsize) {
+    if (realosize < nsize) {
         if (gMemProfileData.is_in_hook) {
             return gMemProfileData.oldAlloc(ud, ptr, osize, nsize);
         }
@@ -712,9 +713,9 @@ static void *my_lua_Alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
         }
 
         // is alloc
-        size_t alloc_sz = nsize - osize;
+        size_t alloc_sz = nsize - realosize;
 
-        if (osize > 0 && ptr) {
+        if (realosize > 0 && ptr) {
             // remove old pointer
             gMemProfileData.ptr2Callstack.erase(ptr);
         }
@@ -740,10 +741,10 @@ static void *my_lua_Alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
         gMemProfileData.hook_alloc_sz = alloc_sz;
 
         return alloc_ptr;
-    } else if (osize > nsize) {
+    } else if (realosize > nsize) {
 
         // free some memory
-        size_t free_sz = osize - nsize;
+        size_t free_sz = realosize - nsize;
 
         // remove old pointer
         auto it = gMemProfileData.ptr2Callstack.find(ptr);
@@ -763,7 +764,7 @@ static void *my_lua_Alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
             gMemProfileData.frees++;
             gMemProfileData.free_size += free_sz;
 
-            LLOG("free %p %u %u %u %u", ptr, osize, nsize, gMemProfileData.frees, gMemProfileData.free_size);
+            LLOG("free %p %u %u %u %u", ptr, realosize, nsize, gMemProfileData.frees, gMemProfileData.free_size);
         }
 
         void *ret = gMemProfileData.oldAlloc(ud, ptr, osize, nsize);
