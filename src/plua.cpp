@@ -445,17 +445,13 @@ static const int MEM_PROFILE_RATE = 524288;  // 512K
 struct MemInfo {
     MemInfo() {}
 
-    MemInfo(uint32_t a, uint32_t as, uint32_t f, uint32_t fs) {
+    MemInfo(uint32_t a, uint32_t f) {
         allocs = a;
-        alloc_size = as;
         frees = f;
-        free_size = fs;
     }
 
     uint32_t allocs = 0;
-    uint32_t alloc_size = 0;
     uint32_t frees = 0;
-    uint32_t free_size = 0;
 };
 
 struct CallStackPointerHash {
@@ -486,12 +482,7 @@ struct MemProfileData {
     lua_Alloc oldAlloc = NULL;
     ssize_t nextSample = 0;
     uint64_t rand = 0;
-    int allocs = 0;
-    int64_t alloc_size = 0;
-    int frees = 0;
-    int64_t free_size = 0;
     int alloc_size_fd = 0;
-    int alloc_count_fd = 0;
     int usage_fd = 0;
     bool is_in_hook = false;
     void *hook_alloc_ptr = 0;
@@ -563,27 +554,12 @@ static void flush_mem_alloc_size() {
         const CallStack &cs = *iter->first;
         auto &mem_info = iter->second;
 
-        flush_file(fd, (const char *) &mem_info.alloc_size, sizeof(mem_info.alloc_size));
-        flush_file(fd, (const char *) &cs, sizeof(cs));
-    }
-
-    flush_mem_left(fd);
-    gMemProfileData.alloc_size_fd = 0;
-}
-
-static void flush_mem_alloc_count() {
-    int fd = gMemProfileData.alloc_count_fd;
-
-    for (auto iter = gMemProfileData.callstack.begin(); iter != gMemProfileData.callstack.end(); iter++) {
-        const CallStack &cs = *iter->first;
-        auto &mem_info = iter->second;
-
         flush_file(fd, (const char *) &mem_info.allocs, sizeof(mem_info.allocs));
         flush_file(fd, (const char *) &cs, sizeof(cs));
     }
 
     flush_mem_left(fd);
-    gMemProfileData.alloc_count_fd = 0;
+    gMemProfileData.alloc_size_fd = 0;
 }
 
 static void flush_mem_usage() {
@@ -592,7 +568,7 @@ static void flush_mem_usage() {
     for (auto iter = gMemProfileData.callstack.begin(); iter != gMemProfileData.callstack.end(); iter++) {
         const CallStack &cs = *iter->first;
         auto &mem_info = iter->second;
-        auto usage = (int) mem_info.alloc_size - (int) mem_info.free_size;
+        auto usage = (int) mem_info.allocs - (int) mem_info.frees;
         if (usage <= 0) {
             continue;
         }
@@ -613,7 +589,6 @@ static void flush_mem() {
     LLOG("flush...");
 
     flush_mem_alloc_size();
-    flush_mem_alloc_count();
     flush_mem_usage();
 
     int total = gMemProfileData.total;
@@ -661,22 +636,18 @@ static void my_lua_Alloc_safe() {
     if (it == gMemProfileData.callstack.end()) {
         auto new_cs = new CallStack();
         memcpy(new_cs, &cs, sizeof(cs));
-        gMemProfileData.callstack[new_cs] = MemInfo(1, hook_alloc_sz, 0, 0);
+        gMemProfileData.callstack[new_cs] = MemInfo(1, 0);
         pointer_cs = new_cs;
     } else {
         auto &mem_info = it->second;
         mem_info.allocs++;
-        mem_info.alloc_size += hook_alloc_sz;
         pointer_cs = it->first;
     }
-
-    gMemProfileData.allocs++;
-    gMemProfileData.alloc_size += hook_alloc_sz;
 
     // add new pointer
     gMemProfileData.ptr2Callstack[hook_alloc_ptr] = pointer_cs;
 
-    LLOG("alloc %p %u %u %u", hook_alloc_ptr, hook_alloc_sz, gMemProfileData.allocs, gMemProfileData.alloc_size);
+    LLOG("alloc %p %u", hook_alloc_ptr, hook_alloc_sz);
 
     gMemProfileData.is_in_hook = false;
 }
@@ -687,7 +658,6 @@ static void AllocMemHandlerHook(lua_State *L, lua_Debug *par) {
 }
 
 static void *my_lua_Alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
-    //LLOG("my_lua_Alloc %p %p %u %u", ud, ptr, osize, nsize);
     size_t realosize = (ptr) ? osize : 0;
 
     if (gRunning == 0) {
@@ -696,6 +666,8 @@ static void *my_lua_Alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
     }
 
     if (realosize < nsize) {
+        LLOG("my_lua_Alloc alloc %p %p %u %u", ud, ptr, osize, nsize);
+
         if (gMemProfileData.is_in_hook) {
             return gMemProfileData.oldAlloc(ud, ptr, osize, nsize);
         }
@@ -717,11 +689,14 @@ static void *my_lua_Alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
 
         // 是否命中采样
         if (static_cast<ssize_t>(alloc_sz) < gMemProfileData.nextSample) {
+            LLOG("not hit %ld %u", gMemProfileData.nextSample, alloc_sz);
             gMemProfileData.nextSample -= static_cast<ssize_t>(alloc_sz);
+            LLOG("nextSample %ld", gMemProfileData.nextSample);
             return gMemProfileData.oldAlloc(ud, ptr, osize, nsize);
         }
 
         gMemProfileData.nextSample = gen_next_sample();
+        LLOG("gen_next_sample nextSample %ld", gMemProfileData.nextSample);
 
         // start profile
         gMemProfileData.total++;
@@ -735,11 +710,11 @@ static void *my_lua_Alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
         gMemProfileData.hook_alloc_ptr = alloc_ptr;
         gMemProfileData.hook_alloc_sz = alloc_sz;
 
+        LLOG("prealloc %p %u", alloc_ptr, alloc_sz);
+
         return alloc_ptr;
     } else if (realosize > nsize) {
-
-        // free some memory
-        size_t free_sz = realosize - nsize;
+        LLOG("my_lua_Alloc free %p %p %u %u", ud, ptr, osize, nsize);
 
         // remove old pointer
         auto it = gMemProfileData.ptr2Callstack.find(ptr);
@@ -754,12 +729,8 @@ static void *my_lua_Alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
         if (it2 != gMemProfileData.callstack.end()) {
             auto &mem_info = it2->second;
             mem_info.frees++;
-            mem_info.free_size += free_sz;
 
-            gMemProfileData.frees++;
-            gMemProfileData.free_size += free_sz;
-
-            LLOG("free %p %u %u %u %u", ptr, realosize, nsize, gMemProfileData.frees, gMemProfileData.free_size);
+            LLOG("free %p %u %u", ptr, realosize, nsize);
         }
 
         void *ret = gMemProfileData.oldAlloc(ud, ptr, osize, nsize);
@@ -802,13 +773,6 @@ static int lrealstartmemsafe(lua_State *L) {
     }
     gMemProfileData.alloc_size_fd = fd;
 
-    fd = open(get_mem_filename(gFilename, "_ALLOC_COUNT").c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0666);
-    if (fd < 0) {
-        LERR("open file fail %s", gFilename.c_str());
-        return -1;
-    }
-    gMemProfileData.alloc_count_fd = fd;
-
     fd = open(get_mem_filename(gFilename, "_USAGE").c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0666);
     if (fd < 0) {
         LERR("open file fail %s", gFilename.c_str());
@@ -832,10 +796,6 @@ static int lrealstartmemsafe(lua_State *L) {
         gMemProfileData.rand = next_random(gMemProfileData.rand);
     }
     gMemProfileData.nextSample = gen_next_sample();
-    gMemProfileData.allocs = 0;
-    gMemProfileData.alloc_size = 0;
-    gMemProfileData.frees = 0;
-    gMemProfileData.free_size = 0;
     gMemProfileData.is_in_hook = false;
     gMemProfileData.hook_alloc_ptr = 0;
     gMemProfileData.hook_alloc_sz = 0;
