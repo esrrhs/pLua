@@ -489,7 +489,7 @@ struct MemProfileData {
     std::unordered_map<void *, CallStack *> ptr2Callstack;
     int total = 0;
     lua_Alloc oldAlloc = NULL;
-    size_t nextSample = 0;
+    ssize_t nextSample = 0;
     uint64_t rand = 0;
     int allocs = 0;
     int64_t alloc_size = 0;
@@ -517,7 +517,7 @@ static uint64_t next_random(uint64_t rnd) {
 #define MAX_SSIZE (static_cast<ssize_t>(static_cast<size_t>(static_cast<ssize_t>(-1)) >> 1))
 
 // 移植自gperftools的Sampler::PickNextSamplingPoint
-static size_t gen_next_sample() {
+static ssize_t gen_next_sample() {
     gMemProfileData.rand = next_random(gMemProfileData.rand);
     // Take the top 26 bits as the random number
     // (This plus the 1<<58 sampling bound give a max possible step of
@@ -532,7 +532,7 @@ static size_t gen_next_sample() {
     // Very large values of interval overflow ssize_t. If we happen to
     // hit such improbable condition, we simply cheat and clamp interval
     // to largest supported value.
-    return static_cast<size_t>(std::min<double>(interval, static_cast<double>(MAX_SSIZE)));
+    return static_cast<ssize_t>(std::min<double>(interval, static_cast<double>(MAX_SSIZE)));
 }
 
 static void flush_mem_left(int fd) {
@@ -721,8 +721,8 @@ static void *my_lua_Alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
         }
 
         // 是否命中采样
-        if (alloc_sz < gMemProfileData.nextSample) {
-            gMemProfileData.nextSample -= alloc_sz;
+        if (static_cast<ssize_t>(alloc_sz) < gMemProfileData.nextSample) {
+            gMemProfileData.nextSample -= static_cast<ssize_t>(alloc_sz);
             return gMemProfileData.oldAlloc(ud, ptr, osize, nsize);
         }
 
