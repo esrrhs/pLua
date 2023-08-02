@@ -66,7 +66,7 @@ c) 执行libclua.so的lrealstop手动关闭，等价于lrealstop(L)
 local p = require "libplua"
 -- 开启采样
 -- 参数1：采样时间（秒），0表示一直采样
--- 参数2：采样结果文件名，会生成三个采样文件，分别代表内存分配大小、内存分配次数、内存占用大小
+-- 参数2：采样结果文件名，会生成2个采样文件，分别代表内存分配大小、内存占用大小
 p.start_mem(0, "mem.pro")
 
 do_some_thing()
@@ -109,8 +109,6 @@ c) 执行libclua.so的lrealstopmem手动关闭，等价于lrealstopmem(L)
 ![image](test/call.png)
 
 #### 查看test_mem.lua的内存采样
-* 内存分配次数
-![image](test/mem_ALLOC_COUNT.png)
 * 内存分配大小
 ![image](test/mem_ALLOC_SIZE.png)
 * 内存占用大小

@@ -1,27 +1,26 @@
 package.cpath = "../bin/?.so;" .. package.cpath
 
-gt1 = {}
-gt2 = {}
-gt3 = {}
+gt = {}
 
 function table_insert1(n)
     local t = {}
     table.insert(t, n)
-    table.insert(gt1, tostring(n))
 end
 
 function table_insert2(n)
     local t = {}
     table.insert(t, n)
-    table.insert(gt2, tostring(n))
     table_insert1(n)
 end
 
 function table_insert3(n)
     local t = {}
     table.insert(t, n)
-    table.insert(gt3, tostring(n))
     table_insert2(n)
+end
+
+function table_insert_global(n)
+    table.insert(gt, n)
 end
 
 function test()
@@ -30,6 +29,11 @@ function test()
         table_insert2(i)
         table_insert3(i)
     end
+
+    for i = 1, 1000000 do
+        table_insert_global(i)
+    end
+
 end
 
 local p = require "libplua"
