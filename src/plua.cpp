@@ -80,71 +80,19 @@ void llog(const char *header, const char *file, const char *func, int pos, const
 
 static const int MAX_FUNC_NAME_SIZE = 127;
 
-/////////////////////////////copy from lua start///////////////////////////////////////////////
-
-/*
-** search for 'objidx' in table at index -1.
-** return 1 + string at top if find a good name.
-*/
-static int findfield(lua_State *L, int objidx, int level) {
-    if (level == 0 || !lua_istable(L, -1))
-        return 0;  /* not found */
-    lua_pushnil(L);  /* start 'next' loop */
-    while (lua_next(L, -2)) {  /* for each pair in table */
-        if (lua_type(L, -2) == LUA_TSTRING) {  /* ignore non-string keys */
-            if (lua_rawequal(L, objidx, -1)) {  /* found object? */
-                lua_pop(L, 1);  /* remove value (but keep name) */
-                return 1;
-            } else if (findfield(L, objidx, level - 1)) {  /* try recursively */
-                lua_remove(L, -2);  /* remove table (but keep name) */
-                lua_pushliteral(L, ".");
-                lua_insert(L, -2);  /* place '.' between the two names */
-                lua_concat(L, 3);
-                return 1;
-            }
-        }
-        lua_pop(L, 1);  /* remove value */
+static std::string get_funcname(lua_State *L, lua_Debug *ar) {
+    char buf[MAX_FUNC_NAME_SIZE + 1] = {0};
+    if (*ar->namewhat != '\0')  /* is there a name from code? */ {
+        snprintf(buf, MAX_FUNC_NAME_SIZE, "%s '%s'", ar->namewhat, ar->name);  /* use it */
+    } else if (*ar->what == 'm')  /* main? */ {
+        snprintf(buf, MAX_FUNC_NAME_SIZE, "main chunk");
+    } else if (*ar->what != 'C')  /* for Lua functions, use <file:line> */ {
+        snprintf(buf, MAX_FUNC_NAME_SIZE, "function <%s:%d>", ar->short_src, ar->linedefined);
+    } else  /* nothing left... */ {
+        snprintf(buf, MAX_FUNC_NAME_SIZE, "%s(%d): %s\n", ar->short_src, ar->currentline, ar->name ? ar->name : "?");
     }
-    return 0;  /* not found */
+    return buf;
 }
-
-/*
-** Search for a name for a function in all loaded modules
-*/
-static int pushglobalfuncname(lua_State *L, lua_Debug *ar) {
-    int top = lua_gettop(L);
-    lua_getinfo(L, "f", ar);  /* push function */
-    lua_getfield(L, LUA_REGISTRYINDEX, LUA_LOADED_TABLE);
-    if (findfield(L, top + 1, 2)) {
-        const char *name = lua_tostring(L, -1);
-        if (strncmp(name, "_G.", 3) == 0) {  /* name start with '_G.'? */
-            lua_pushstring(L, name + 3);  /* push name without prefix */
-            lua_remove(L, -2);  /* remove original name */
-        }
-        lua_copy(L, -1, top + 1);  /* move name to proper place */
-        lua_pop(L, 2);  /* remove pushed values */
-        return 1;
-    } else {
-        lua_settop(L, top);  /* remove function and global table */
-        return 0;
-    }
-}
-
-
-static void pushfuncname(lua_State *L, lua_Debug *ar) {
-    if (pushglobalfuncname(L, ar)) {  /* try first a global name */
-        lua_pushfstring(L, "function '%s'", lua_tostring(L, -1));
-        lua_remove(L, -2);  /* remove name */
-    } else if (*ar->namewhat != '\0')  /* is there a name from code? */
-        lua_pushfstring(L, "%s '%s'", ar->namewhat, ar->name);  /* use it */
-    else if (*ar->what == 'm')  /* main? */
-        lua_pushliteral(L, "main chunk");
-    else if (*ar->what != 'C')  /* for Lua functions, use <file:line> */
-        lua_pushfstring(L, "function <%s:%d>", ar->short_src, ar->linedefined);
-    else  /* nothing left... */
-        lua_pushliteral(L, "?");
-}
-
 
 static int lastlevel(lua_State *L) {
     lua_Debug ar;
@@ -162,9 +110,6 @@ static int lastlevel(lua_State *L) {
     }
     return le - 1;
 }
-
-
-/////////////////////////////copy from lua end///////////////////////////////////////////////
 
 std::unordered_map<std::string, int> gString2Id;
 std::unordered_map<int, std::string> gId2String;
@@ -304,9 +249,7 @@ static void get_cur_callstack(lua_State *L, CallStack &cs) {
 
     while (lua_getstack(L, last, &ar) && i < MAX_STACK_SIZE) {
         lua_getinfo(L, "Slnt", &ar);
-        pushfuncname(L, &ar);
-        const char *funcname = lua_tostring(L, -1);
-        lua_pop(L, 1);
+        auto funcname = get_funcname(L, &ar);
 
         i++;
         last--;
