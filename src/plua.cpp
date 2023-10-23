@@ -169,8 +169,9 @@ static int lastlevel(lua_State *L) {
 std::unordered_map<std::string, int> gString2Id;
 std::unordered_map<int, std::string> gId2String;
 
-static const char *IGNORE_NAME[] = {"?", "function 'xpcall'", "function 'pcall'", "function", "function 'tcall'",
-                                    "function 'txpcall'", "local 'func'"};
+static const char *IGNORE_NAME[] = {"?", "function 'xpcall'", "upvalue 'xpcall'", "field 'xpcall'",
+                                    "function 'pcall'", "upvalue 'pcall'", "field 'pcall'",
+                                    "function", "local 'func'"};
 static const int VALID_MIN_ID = sizeof(IGNORE_NAME) / sizeof(const char *);
 
 static const int MAX_STACK_SIZE = 64;
