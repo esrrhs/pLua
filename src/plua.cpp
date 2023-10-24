@@ -428,7 +428,7 @@ struct MemProfileData {
     uint64_t rand = 0;
     int alloc_size_fd = 0;
     int usage_fd = 0;
-    bool is_in_hook = false;
+    int is_in_hook = 0;
     void *hook_alloc_ptr = 0;
     size_t hook_alloc_sz = 0;
 };
@@ -567,7 +567,7 @@ extern "C" int lrealstopmem(lua_State *L) {
 }
 
 static void my_lua_Alloc_safe() {
-    gMemProfileData.is_in_hook = true;
+    gMemProfileData.is_in_hook++;
 
     auto hook_alloc_ptr = gMemProfileData.hook_alloc_ptr;
     auto hook_alloc_sz = gMemProfileData.hook_alloc_sz;
@@ -593,7 +593,7 @@ static void my_lua_Alloc_safe() {
 
     LLOG("alloc %p %u", hook_alloc_ptr, hook_alloc_sz);
 
-    gMemProfileData.is_in_hook = false;
+    gMemProfileData.is_in_hook--;
 }
 
 static void AllocMemHandlerHook(lua_State *L, lua_Debug *par) {
@@ -740,7 +740,7 @@ static int lrealstartmemsafe(lua_State *L) {
         gMemProfileData.rand = next_random(gMemProfileData.rand);
     }
     gMemProfileData.nextSample = gen_next_sample();
-    gMemProfileData.is_in_hook = false;
+    gMemProfileData.is_in_hook = 0;
     gMemProfileData.hook_alloc_ptr = 0;
     gMemProfileData.hook_alloc_sz = 0;
 
