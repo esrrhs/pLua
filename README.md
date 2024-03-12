@@ -111,8 +111,6 @@ c) 执行libclua.so的lrealstopmem手动关闭，等价于lrealstopmem(L)
 #### 查看test_mem.lua的内存采样
 * 内存分配大小
 ![image](test/mem_ALLOC_SIZE.png)
-* 内存占用大小
-![image](test/mem_USAGE.png)
 
 ## 其他
 [lua全家桶](https://github.com/esrrhs/lua-family-bucket)
