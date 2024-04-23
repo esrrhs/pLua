@@ -161,6 +161,7 @@ func showpprof(filedata *FileData, filename string) {
 		name := strings.Replace(str, "<", "'", -1)
 		name = strings.Replace(name, ">", "'", -1)
 		name = strings.Replace(name, "\"", "\\\"", -1)
+		name = strings.ToValidUTF8(name, "?")
 		tmp := fmt.Sprintf("0x%016x %s\n", id+0xFF000000, name)
 		output = append(output, []byte(tmp)...)
 	}
