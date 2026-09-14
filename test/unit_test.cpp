@@ -39,11 +39,13 @@ int main() {
     const char *cpu_file = "cpp_test_cpu.pro";
     std::remove(cpu_file);
 
-    int r = luaL_dostring(L, "local p = require('libplua'); p.start(0, 'cpp_test_cpu.pro')");
-    ASSERT_TRUE(r == 0);
-    r = luaL_dostring(L, "local s = 0; for i = 1, 100000 do s = s + math.sin(i) end");
-    ASSERT_TRUE(r == 0);
-    r = luaL_dostring(L, "local p = require('libplua'); p.stop()");
+    int r = luaL_dostring(L,
+        "local function fib(n) if n <= 1 then return n end return fib(n-1) + fib(n-2) end\n"
+        "local p = require('libplua')\n"
+        "p.start(0, 'cpp_test_cpu.pro')\n"
+        "for i = 1, 50 do fib(22) end\n"
+        "p.stop()\n"
+    );
     ASSERT_TRUE(r == 0);
 
     ASSERT_TRUE(file_exists_and_non_empty(cpu_file));
@@ -56,11 +58,14 @@ int main() {
     std::remove(mem_alloc);
     std::remove(mem_usage);
 
-    r = luaL_dostring(L, "local p = require('libplua'); p.start_mem(0, 'cpp_test_mem.pro')");
-    ASSERT_TRUE(r == 0);
-    r = luaL_dostring(L, "local t = {}; for i = 1, 50000 do t[i] = tostring(i) end; collectgarbage('collect')");
-    ASSERT_TRUE(r == 0);
-    r = luaL_dostring(L, "local p = require('libplua'); p.stop_mem()");
+    r = luaL_dostring(L,
+        "local p = require('libplua')\n"
+        "p.start_mem(0, 'cpp_test_mem.pro')\n"
+        "local t = {}\n"
+        "for i = 1, 50000 do t[i] = { id = i, s = tostring(i) } end\n"
+        "collectgarbage('collect')\n"
+        "p.stop_mem()\n"
+    );
     ASSERT_TRUE(r == 0);
 
     ASSERT_TRUE(file_exists_and_non_empty(mem_alloc));
