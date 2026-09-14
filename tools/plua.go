@@ -28,8 +28,10 @@ type FileData struct {
 }
 
 func main() {
-	input := flag.String("i", "", "input file")
+	input := flag.String("i", "", "input file (.pro)")
 	pprof := flag.String("pprof", "", "gen pprof symbolized-profiles")
+	flame := flag.String("flame", "", "gen flamegraph collapsed stacks file")
+	collapsed := flag.String("collapsed", "", "alias for -flame")
 
 	flag.Parse()
 
@@ -45,6 +47,14 @@ func main() {
 
 	if *pprof != "" {
 		showpprof(filedata, *pprof)
+	}
+
+	flameOut := *flame
+	if flameOut == "" {
+		flameOut = *collapsed
+	}
+	if flameOut != "" {
+		showcollapsed(filedata, flameOut)
 	}
 }
 
@@ -206,4 +216,34 @@ func showpprof(filedata *FileData, filename string) {
 	f.Write(output)
 
 	fmt.Printf("total sample %v\n", total)
+}
+
+func showcollapsed(filedata *FileData, filename string) {
+	var b strings.Builder
+	total := 0
+	for _, cs := range filedata.callstack {
+		var names []string
+		for i := 0; i < len(cs.stacks); i++ {
+			name, ok := filedata.id2str[cs.stacks[i]]
+			if !ok {
+				name = fmt.Sprintf("0x%x", cs.stacks[i])
+			}
+			name = strings.ReplaceAll(name, ";", ":")
+			name = strings.ReplaceAll(name, "\r", "")
+			name = strings.ReplaceAll(name, "\n", " ")
+			name = strings.ToValidUTF8(name, "?")
+			names = append(names, name)
+		}
+		b.WriteString(strings.Join(names, ";"))
+		b.WriteString(fmt.Sprintf(" %d\n", cs.count))
+		total += cs.count
+	}
+
+	err := ioutil.WriteFile(filename, []byte(b.String()), 0644)
+	if err != nil {
+		fmt.Printf("write flame collapsed file fail: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("total collapsed sample %v\n", total)
 }

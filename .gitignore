@@ -20,3 +20,12 @@ CMakeSettings.json
 .*.swp
 .vs/
 .a
+*.pro
+*.prof
+*.dot
+*.fl
+*.svg
+plua.log
+tools/flamegraph.pl
+tools/pprof
+tools/plua
