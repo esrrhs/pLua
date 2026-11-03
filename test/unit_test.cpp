@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <iterator>
 
 #if !defined(_WIN32)
 #include <unistd.h>
@@ -35,6 +36,32 @@ static bool file_exists_and_non_empty(const std::string &path) {
 static void register_plua(lua_State *L) {
     luaL_requiref(L, "libplua", luaopen_libplua, 1);
     lua_pop(L, 1);
+}
+
+// C function that lua_call's a Lua callback — leaves a C frame on the debug
+// stack while the nested Lua code runs (and while pLua's count hook may fire).
+static int c_invoke_lua_callback(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TFUNCTION);
+    int n = (int)luaL_optinteger(L, 2, 200);
+    for (int i = 0; i < n; i++) {
+        lua_pushvalue(L, 1);
+        if (lua_pcall(L, 0, 0, 0) != LUA_OK) {
+            return lua_error(L);
+        }
+    }
+    return 0;
+}
+
+static void register_c_callback_helper(lua_State *L) {
+    lua_pushcfunction(L, c_invoke_lua_callback);
+    lua_setglobal(L, "plua_c_invoke");
+}
+
+static bool file_contains(const std::string &path, const char *needle) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f.is_open()) return false;
+    std::string data((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    return data.find(needle) != std::string::npos;
 }
 
 static int run_basic_tests() {
@@ -282,6 +309,71 @@ static int run_multistate_tests() {
     return 0;
 }
 
+static int run_cattr_tests() {
+    std::cout << "[C++ C-attr] Lua attribution through C callback..." << std::endl;
+    lua_State *L = luaL_newstate();
+    ASSERT_TRUE(L != nullptr);
+    luaL_openlibs(L);
+    register_plua(L);
+    register_c_callback_helper(L);
+
+    const char *cpu_file = "cpp_cattr_cpu.pro";
+    const char *mem_alloc = "cpp_cattr_mem_ALLOC_SIZE.pro";
+    const char *mem_usage = "cpp_cattr_mem_USAGE.pro";
+    std::remove(cpu_file);
+    std::remove(mem_alloc);
+    std::remove(mem_usage);
+
+    // Outer Lua frames call into C, which pcall's back into Lua. While the
+    // nested Lua runs, the C frame sits on the debug stack; skipping it must
+    // still attribute samples to these uniquely named Lua wrappers.
+    int r = luaL_dostring(L,
+        "local p = require('libplua')\n"
+        "assert(p.set_config({ cpu_backend = 'count', cpu_hook_count = 20, mem_rate = 512 }) == 0)\n"
+        "local function plua_cpp_cattr_cpu_outer()\n"
+        "  local function leaf()\n"
+        "    local s = string.rep('z', 64)\n"
+        "    return string.find(s, 'zz', 1, true)\n"
+        "  end\n"
+        "  plua_c_invoke(leaf, 400)\n"
+        "end\n"
+        "assert(p.start(0, 'cpp_cattr_cpu.pro') == 0)\n"
+        "plua_cpp_cattr_cpu_outer()\n"
+        "assert(p.stop() == 0)\n"
+        "local function plua_cpp_cattr_mem_outer()\n"
+        "  local function leaf()\n"
+        "    local t = {}\n"
+        "    for i = 1, 200 do t[i] = string.rep(tostring(i), 16) end\n"
+        "    return t\n"
+        "  end\n"
+        "  plua_c_invoke(leaf, 50)\n"
+        "end\n"
+        "assert(p.start_mem(0, 'cpp_cattr_mem.pro') == 0)\n"
+        "plua_cpp_cattr_mem_outer()\n"
+        "collectgarbage('collect')\n"
+        "assert(p.stop_mem() == 0)\n"
+    );
+    if (r != 0) {
+        std::cerr << lua_tostring(L, -1) << std::endl;
+    }
+    ASSERT_TRUE(r == 0);
+    ASSERT_TRUE(file_exists_and_non_empty(cpu_file));
+    ASSERT_TRUE(file_contains(cpu_file, "plua_cpp_cattr_cpu_outer"));
+    ASSERT_TRUE(file_exists_and_non_empty(mem_alloc));
+    // Mem samples taken while C wrapper is on the stack should still name Lua.
+    // The nested alloc function is anonymous; accept either the leaf name from
+    // CPU file already checked, or any non-empty Lua frame marker in mem file.
+    ASSERT_TRUE(file_contains(mem_alloc, "plua_cpp_cattr_mem_outer"));
+
+    std::remove(cpu_file);
+    std::remove(mem_alloc);
+    std::remove(mem_usage);
+    std::remove("plua.log");
+    lua_close(L);
+    std::cout << "  -> C-callback Lua attribution OK" << std::endl;
+    return 0;
+}
+
 int main(int argc, char **argv) {
     bool multistate = false;
     for (int i = 1; i < argc; i++) {
@@ -292,6 +384,8 @@ int main(int argc, char **argv) {
     }
     // Default: run both suites so a plain `unit_test` invocation is thorough
     int rc = run_basic_tests();
+    if (rc != 0) return rc;
+    rc = run_cattr_tests();
     if (rc != 0) return rc;
     return run_multistate_tests();
 }

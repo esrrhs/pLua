@@ -23,6 +23,7 @@ Similar to `gperftools`, **pLua** profiles CPU hotspots and memory allocations f
 - **Configurable rates**: `set_config` / `get_config`, environment variables, and optional rate arguments on `start` / `start_mem`.
 - **Runtime status**: `status()` reports whether CPU/mem are running, sample counts, output paths, backend, and a config snapshot. `close()` tears down the session for the current `lua_State`.
 - **Lightweight**: Sampling approach keeps runtime overhead low.
+- **Lua attribution through C**: When a sample lands while a C API / C callback is on the stack, pLua skips C frames (same idea as [vLua](https://github.com/esrrhs/vLua)) and records the nearest Lua frames (source/name/line). This is **not** a full native C unwind — only Lua call info is recovered.
 - **Intuitive**: Outputs call graphs compatible with `pprof` (`gperftools`) and FlameGraph collapsed stacks / SVGs.
 
 ---
@@ -214,6 +215,8 @@ Each state keeps an independent session (CPU and/or mem). Stopping one state doe
 - Only interpret profiles as covering the thread(s) where you explicitly started pLua.
 
 Session cleanup: stopping both CPU and mem (or calling `close`) unregisters the session; `lua_close` also drops it via a registry userdata `__gc` (no dangling `gSessions` entry).
+
+**C frames.** Samples taken while execution is inside a C function (standard library, `lua_CFunction`, or a C→Lua callback still on the stack) **skip** those C frames and attribute to the topmost recoverable Lua frame. pLua does not unwind native C frames / symbols unless you already use an external native profiler.
 
 ---
 

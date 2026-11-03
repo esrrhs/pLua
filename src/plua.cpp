@@ -109,16 +109,22 @@ static const int DEFAULT_MEM_PROFILE_RATE = 524288;  // 512K
 static const uint32_t PLUA_PRO_MAGIC = 0x41554C50; // 'PLUA' LE
 static const uint32_t PLUA_PRO_VERSION = 1;
 
+// Build a stable display name for a Lua debug frame.
+// C frames are normally skipped in get_cur_callstack (vLua-style); this helper
+// still formats them if a caller needs a label.
 static std::string get_funcname(lua_State *L, lua_Debug *ar) {
+    (void)L;
     char buf[MAX_FUNC_NAME_SIZE + 1] = {0};
-    if (*ar->namewhat != '\0') {
+    if (ar->namewhat != NULL && *ar->namewhat != '\0' && ar->name != NULL) {
         snprintf(buf, MAX_FUNC_NAME_SIZE, "%s '%s'", ar->namewhat, ar->name);
-    } else if (*ar->what == 'm') {
+    } else if (ar->what != NULL && *ar->what == 'm') {
         snprintf(buf, MAX_FUNC_NAME_SIZE, "main chunk");
-    } else if (*ar->what != 'C') {
-        snprintf(buf, MAX_FUNC_NAME_SIZE, "function <%s:%d>", ar->short_src, ar->linedefined);
+    } else if (ar->what == NULL || *ar->what != 'C') {
+        snprintf(buf, MAX_FUNC_NAME_SIZE, "function <%s:%d>",
+                 ar->short_src, ar->linedefined);
     } else {
-        snprintf(buf, MAX_FUNC_NAME_SIZE, "%s(%d): %s\n", ar->short_src, ar->currentline, ar->name ? ar->name : "?");
+        // Rare: C frame label (usually filtered out when walking the stack)
+        snprintf(buf, MAX_FUNC_NAME_SIZE, "[C] %s", ar->name ? ar->name : "?");
     }
     return buf;
 }
@@ -443,6 +449,10 @@ static bool write_pro_header(int fd) {
     return true;
 }
 
+// Walk the Lua debug stack bottom→top. Like vLua (which only keeps CallInfo
+// frames with CIST_LUA), skip pure C frames and record Lua/main frames so a
+// sample that lands while a C API / C callback is active still attributes to
+// the nearest/top Lua caller (source/name/line via lua_getinfo).
 static void get_cur_callstack(ProfilerSession *s, CallStack &cs) {
     lua_State *L = s->L;
     lua_Debug ar;
@@ -452,10 +462,16 @@ static void get_cur_callstack(ProfilerSession *s, CallStack &cs) {
 
     while (lua_getstack(L, last, &ar) && i < MAX_STACK_SIZE) {
         lua_getinfo(L, "Slnt", &ar);
-        auto funcname = get_funcname(L, &ar);
-
         i++;
         last--;
+
+        // Skip C frames — recover surrounding Lua attribution (vLua approach
+        // adapted to the public debug API).
+        if (ar.what != NULL && ar.what[0] == 'C') {
+            continue;
+        }
+
+        auto funcname = get_funcname(L, &ar);
 
         int id = 0;
         auto iter = s->string2Id.find(funcname);
@@ -602,6 +618,8 @@ static void take_cpu_sample(ProfilerSession *s) {
     }
     CallStack cs;
     get_cur_callstack(s, cs);
+    // No Lua frame recoverable (e.g. pure C with empty debug stack) — drop.
+    if (cs.depth <= 0) return;
     s->cpuData.callstack[cs]++;
     s->cpuData.total++;
 }
@@ -613,6 +631,10 @@ static void take_mem_sample(ProfilerSession *s) {
 
     CallStack cs;
     get_cur_callstack(s, cs);
+    if (cs.depth <= 0) {
+        s->memData.is_in_hook--;
+        return;
+    }
 
     auto it = s->memData.callstack.find(&cs);
     CallStack *pointer_cs = 0;

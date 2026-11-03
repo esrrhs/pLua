@@ -23,6 +23,7 @@ Lua 性能及内存分析工具。
 - **可配置采样率**：`set_config` / `get_config`、环境变量，以及 `start` / `start_mem` 的可选速率参数。
 - **运行时状态查询**：`status()` 可查看 CPU/内存是否在采、样本数、输出路径、当前后端与配置快照；`close()` 用于释放当前 `lua_State` 上的会话。
 - **轻量**：基于采样，对宿主性能影响小。
+- **C 回调仍可归因到 Lua**：采样落在 C API / C 回调栈帧上时，会跳过 C 帧（思路对齐 [vLua](https://github.com/esrrhs/vLua)），保留最近的 Lua 帧（源文件/函数名/行号）。这不是完整的原生 C 栈展开，只恢复 Lua 侧信息。
 - **直观**：兼容 `pprof`（`gperftools`），可生成折叠堆栈与火焰图 SVG。
 
 ---
@@ -212,6 +213,8 @@ p.stop_mem()
 - 解读结果时，只把采样范围理解为「你显式 start 过的那些线程」。
 
 会话回收：CPU 与内存都停止后（或调用 `close`）会注销会话；`lua_close` 时也会通过 registry userdata 的 `__gc` 清理，避免 `gSessions` 残留悬空指针。
+
+**C 栈帧。** 当采样发生在 C 函数中（标准库、`lua_CFunction`，或栈上仍有 C→Lua 回调）时，会 **跳过** 这些 C 帧，归因到可恢复的顶层 Lua 帧。pLua 本身不做原生 C 符号回溯；如需完整 native 栈，请配合外部原生分析器。
 
 ---
 

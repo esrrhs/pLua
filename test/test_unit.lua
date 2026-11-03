@@ -198,6 +198,62 @@ assert(plua.stop() == 0)
 remove_file(cpu_out)
 print("  -> Passed: close() and restart OK")
 
+-- 8. C-callback / C API samples still attribute to Lua frames
+print("[Test 8] Lua attribution through C API calls...")
+remove_file(cpu_out)
+remove_file(mem_alloc)
+remove_file(mem_usage)
+-- Force count backend so samples are deterministic on any platform.
+assert(plua.set_config({ cpu_backend = "count", cpu_hook_count = 50, mem_rate = 1024 }) == 0)
+
+local function plua_c_attr_cpu_leaf()
+    local n = 0
+    for i = 1, 2000 do
+        -- Spend time in C (string.find / string.rep) with Lua leaf on stack.
+        local s = string.rep("abcdef", 20)
+        local a, b = string.find(s, "cde", 1, true)
+        n = n + (a or 0) + (b or 0) + #s
+    end
+    return n
+end
+
+assert(plua.start(0, cpu_out) == 0)
+for i = 1, 30 do
+    plua_c_attr_cpu_leaf()
+end
+assert(plua.stop() == 0)
+assert(file_exists_and_not_empty(cpu_out), "CPU profile missing after C API workload")
+
+local function pro_contains(path, needle)
+    local f = io.open(path, "rb")
+    assert(f, "cannot open " .. path)
+    local data = f:read("*a")
+    f:close()
+    return data ~= nil and string.find(data, needle, 1, true) ~= nil
+end
+
+assert(pro_contains(cpu_out, "plua_c_attr_cpu_leaf"),
+    "CPU profile should attribute through C APIs to Lua function plua_c_attr_cpu_leaf")
+
+local function plua_c_attr_mem_leaf()
+    local t = {}
+    for i = 1, 5000 do
+        -- Allocations often happen inside C (string / table ops).
+        t[i] = string.rep(tostring(i), 8)
+    end
+    return t
+end
+
+assert(plua.start_mem(0, mem_out) == 0)
+local holder8 = plua_c_attr_mem_leaf()
+assert(#holder8 > 0)
+collectgarbage("collect")
+assert(plua.stop_mem() == 0)
+assert(file_exists_and_not_empty(mem_alloc), "mem profile missing after C alloc path")
+assert(pro_contains(mem_alloc, "plua_c_attr_mem_leaf"),
+    "mem profile should attribute C-side alloc samples to Lua plua_c_attr_mem_leaf")
+print("  -> Passed: C API samples recover top Lua frame names")
+
 -- Cleanup
 remove_file(cpu_out)
 remove_file(mem_alloc)
