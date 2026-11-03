@@ -1,4 +1,4 @@
-package.cpath = "../bin/?.so;" .. package.cpath
+package.cpath = "../bin/?.so;../bin/?.dylib;../bin/?.dll;" .. package.cpath
 
 gt = {}
 

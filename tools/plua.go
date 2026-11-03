@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"math"
 	"os"
 	"strings"
@@ -13,6 +12,7 @@ import (
 const (
 	MAX_FUNC_NAME_SIZE = 127
 	MAX_STACK_SIZE     = 64
+	proMagic           = 0x41554C50 // 'PLUA' little-endian
 )
 
 type CallStack struct {
@@ -22,6 +22,7 @@ type CallStack struct {
 }
 
 type FileData struct {
+	version   uint32
 	str2id    map[string]int
 	id2str    map[int]string
 	callstack []CallStack
@@ -59,8 +60,7 @@ func main() {
 }
 
 func parse(filename string) (*FileData, bool) {
-
-	data, err := ioutil.ReadFile(filename)
+	data, err := os.ReadFile(filename)
 	if err != nil {
 		fmt.Printf("ReadFile fail %v\n", err)
 		return nil, false
@@ -69,6 +69,20 @@ func parse(filename string) (*FileData, bool) {
 	if len(data) < 4 {
 		fmt.Printf("data error too small\n")
 		return nil, false
+	}
+
+	headerSize := 0
+	version := uint32(0)
+	if len(data) >= 8 {
+		magic := binary.LittleEndian.Uint32(data[0:4])
+		if magic == proMagic {
+			version = binary.LittleEndian.Uint32(data[4:8])
+			if version < 1 {
+				fmt.Printf("unsupported .pro version %v\n", version)
+				return nil, false
+			}
+			headerSize = 8
+		}
 	}
 
 	namemaplen := int(binary.LittleEndian.Uint32(data[len(data)-4 : len(data)]))
@@ -84,7 +98,7 @@ func parse(filename string) (*FileData, bool) {
 	end := len(data) - 4
 	for i := 0; i < len(data) && namenum < namemaplen; i++ {
 		start := end - 4
-		if start < 0 || end < 0 {
+		if start < headerSize || end < headerSize {
 			fmt.Printf("get id fail %v %v\n", start, end)
 			return nil, false
 		}
@@ -92,7 +106,7 @@ func parse(filename string) (*FileData, bool) {
 		end -= 4
 
 		start = end - 4
-		if start < 0 || end < 0 {
+		if start < headerSize || end < headerSize {
 			fmt.Printf("get name len fail %v %v\n", start, end)
 			return nil, false
 		}
@@ -105,6 +119,10 @@ func parse(filename string) (*FileData, bool) {
 		}
 
 		start = end - namelen
+		if start < headerSize {
+			fmt.Printf("name out of range\n")
+			return nil, false
+		}
 		str := string(data[start:end])
 		end -= namelen
 
@@ -115,16 +133,24 @@ func parse(filename string) (*FileData, bool) {
 	}
 
 	callstack := make([]CallStack, 0)
-	for end > 0 {
+	for end > headerSize {
 		stacks := make([]int, MAX_STACK_SIZE)
 		for i := 0; i < MAX_STACK_SIZE; i++ {
 			start := end - 4
+			if start < headerSize {
+				fmt.Printf("stack underflow\n")
+				return nil, false
+			}
 			stack := int(binary.LittleEndian.Uint32(data[start:end]))
 			end -= 4
 			stacks[MAX_STACK_SIZE-i-1] = stack
 		}
 
 		start := end - 4
+		if start < headerSize {
+			fmt.Printf("deps underflow\n")
+			return nil, false
+		}
 		deps := int(binary.LittleEndian.Uint32(data[start:end]))
 		end -= 4
 
@@ -134,6 +160,10 @@ func parse(filename string) (*FileData, bool) {
 		}
 
 		start = end - 4
+		if start < headerSize {
+			fmt.Printf("count underflow\n")
+			return nil, false
+		}
 		count := int(binary.LittleEndian.Uint32(data[start:end]))
 		end -= 4
 
@@ -152,6 +182,7 @@ func parse(filename string) (*FileData, bool) {
 	}
 
 	filedata := &FileData{
+		version:   version,
 		str2id:    str2id,
 		id2str:    id2str,
 		callstack: callstack,
@@ -161,7 +192,6 @@ func parse(filename string) (*FileData, bool) {
 }
 
 func showpprof(filedata *FileData, filename string) {
-
 	var output []byte
 
 	output = append(output, []byte("--- symbol\n")...)
@@ -239,7 +269,7 @@ func showcollapsed(filedata *FileData, filename string) {
 		total += cs.count
 	}
 
-	err := ioutil.WriteFile(filename, []byte(b.String()), 0644)
+	err := os.WriteFile(filename, []byte(b.String()), 0644)
 	if err != nil {
 		fmt.Printf("write flame collapsed file fail: %v\n", err)
 		os.Exit(1)

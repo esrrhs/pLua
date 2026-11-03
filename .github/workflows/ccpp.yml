@@ -7,9 +7,8 @@ on:
     branches: [ "**" ]
 
 jobs:
-  build-and-test:
+  ubuntu:
     runs-on: ubuntu-latest
-
     steps:
     - uses: actions/checkout@v4
 
@@ -22,16 +21,13 @@ jobs:
         echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
     - name: Configure CMake
-      run: |
-        cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+      run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
 
     - name: Build
-      run: |
-        cmake --build build --config Release
+      run: cmake --build build --config Release
 
     - name: Run Unit Tests
-      run: |
-        ctest --test-dir build --output-on-failure
+      run: ctest --test-dir build --output-on-failure
 
     - name: Run Example & Test Visualization Tools
       run: |
@@ -40,3 +36,124 @@ jobs:
         lua test_mem.lua || lua5.3 test_mem.lua
         cd ../tools
         ./show.sh ../test
+
+  macos:
+    runs-on: macos-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Dependencies
+      run: |
+        brew update
+        brew install lua go || true
+        # Ensure lua headers/libs are discoverable
+        brew list lua
+
+    - name: Configure CMake
+      run: |
+        LUA_PREFIX="$(brew --prefix lua)"
+        cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
+          -DLUA_INCLUDE_DIR="${LUA_PREFIX}/include/lua" \
+          -DLUA_LIBRARIES="${LUA_PREFIX}/lib/liblua.dylib" \
+          || cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+
+    - name: Build
+      run: cmake --build build --config Release
+
+    - name: Run Unit Tests
+      run: ctest --test-dir build --output-on-failure
+
+  windows:
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.22'
+
+    # Chocolatey's `lua` package is LuaForWindows 5.1.5 (too old; pLua needs 5.2+),
+    # and lua.org FTP often times out on GHA. Build Lua 5.4 from the GitHub mirror.
+    - name: Build Lua 5.4 (MSVC DLL + import lib)
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $ver = '5.4.7'
+        $zip = Join-Path $env:RUNNER_TEMP "lua-$ver.zip"
+        $url = "https://github.com/lua/lua/archive/refs/tags/v$ver.zip"
+        $prefix = Join-Path $env:RUNNER_TEMP "lua-prefix"
+        Write-Host "Downloading $url"
+        Invoke-WebRequest -Uri $url -OutFile $zip
+        Expand-Archive -Path $zip -DestinationPath $env:RUNNER_TEMP -Force
+        $src = Join-Path $env:RUNNER_TEMP "lua-$ver"
+        if (-not (Test-Path (Join-Path $src "lua.h"))) {
+          throw "Lua sources not found under $src"
+        }
+
+        New-Item -ItemType Directory -Force -Path "$prefix\include", "$prefix\lib", "$prefix\bin" | Out-Null
+        Copy-Item @(
+          "$src\lua.h",
+          "$src\luaconf.h",
+          "$src\lualib.h",
+          "$src\lauxlib.h"
+        ) -Destination "$prefix\include\"
+        if (Test-Path "$src\lua.hpp") {
+          Copy-Item "$src\lua.hpp" "$prefix\include\"
+        }
+
+        $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+        $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+        if (-not $vs) { throw "Visual Studio with MSVC tools not found" }
+        $vcvars = Join-Path $vs "VC\Auxiliary\Build\vcvars64.bat"
+        if (-not (Test-Path $vcvars)) { throw "vcvars64.bat not found at $vcvars" }
+
+        $bat = Join-Path $env:RUNNER_TEMP "build_lua54.bat"
+        @"
+        @echo on
+        call "$vcvars" || exit /b 1
+        cd /d "$src" || exit /b 1
+        cl /nologo /MD /O2 /W3 /c /DLUA_BUILD_AS_DLL l*.c
+        if errorlevel 1 exit /b 1
+        del /q lua.obj luac.obj 2>nul
+        link /nologo /DLL /OUT:lua54.dll /IMPLIB:lua54.lib *.obj
+        if errorlevel 1 exit /b 1
+        "@ | Set-Content -Path $bat -Encoding ASCII
+
+        cmd /c $bat
+        if ($LASTEXITCODE -ne 0) { throw "MSVC Lua 5.4 build failed with exit $LASTEXITCODE" }
+
+        Copy-Item "$src\lua54.dll" "$prefix\bin\"
+        Copy-Item "$src\lua54.lib" "$prefix\lib\"
+        if (-not (Test-Path "$prefix\lib\lua54.lib")) { throw "lua54.lib missing after build" }
+
+        "LUA_PREFIX=$prefix" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+        "LUA_INCLUDE_DIR=$prefix\include" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+        "LUA_LIBRARY=$prefix\lib\lua54.lib" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+        Write-Host "Lua 5.4 installed under $prefix"
+        Get-ChildItem -Recurse $prefix | Format-Table FullName, Length
+
+    - name: Configure CMake
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF `
+          "-DLUA_INCLUDE_DIR=$env:LUA_INCLUDE_DIR" `
+          "-DLUA_LIBRARY=$env:LUA_LIBRARY" `
+          "-DLUA_LIBRARIES=$env:LUA_LIBRARY"
+        if ($LASTEXITCODE -ne 0) { throw "CMake configure failed" }
+
+    - name: Build
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        cmake --build build --config Release
+        if ($LASTEXITCODE -ne 0) { throw "Windows build failed" }
+
+    - name: Check DLL artifact
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $dlls = @(Get-ChildItem -Recurse bin, build -Filter "libplua.dll" -ErrorAction SilentlyContinue)
+        $dlls | Format-Table FullName, Length
+        if ($dlls.Count -lt 1) { throw "libplua.dll not produced" }
