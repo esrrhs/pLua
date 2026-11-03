@@ -29,3 +29,6 @@ plua.log
 tools/flamegraph.pl
 tools/pprof
 tools/plua
+
+build2
+build_asan
