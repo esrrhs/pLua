@@ -158,7 +158,7 @@ The `tools/` directory provides utilities to convert `.pro` profile data into Fl
 ### Prerequisites (Optional)
 - **FlameGraph**: `show.sh` will automatically fetch `flamegraph.pl` from GitHub if not found locally or in `PATH`. On CentOS/RHEL, you may need `yum install perl-open`.
 - **Graphviz** (for call graph PNG): `sudo apt install graphviz` / `sudo yum install graphviz`
-- **pprof** (for call graph DOT/PNG): `sudo apt install google-perftools` / `sudo yum install gperftools`
+- **pprof** (for call graph DOT/PNG): `go install github.com/google/pprof@latest` (Ubuntu ≤24.04: `sudo apt install google-perftools`; RHEL: `sudo yum install gperftools`)
 
 ### Generate Visualizations
 ```shell

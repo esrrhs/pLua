@@ -158,7 +158,7 @@ p.stop_mem()
 ### 可选依赖
 - **FlameGraph**：若本地及 PATH 中无 `flamegraph.pl`，`show.sh` 会尝试自动下载。CentOS 下可能需要 `yum install perl-open`。
 - **Graphviz**（用于生成调用关系 PNG 图片）：`sudo apt install graphviz` / `sudo yum install graphviz`。
-- **pprof**（用于生成 DOT 调用图）：`sudo apt install google-perftools` / `sudo yum install gperftools`。
+- **pprof**（用于生成 DOT 调用图）：`go install github.com/google/pprof@latest`（Ubuntu ≤24.04：`sudo apt install google-perftools`；RHEL：`sudo yum install gperftools`）。
 
 ### 批量生成可视化图表
 ```shell
