@@ -7,9 +7,8 @@ on:
     branches: [ "**" ]
 
 jobs:
-  build-and-test:
+  ubuntu:
     runs-on: ubuntu-latest
-
     steps:
     - uses: actions/checkout@v4
 
@@ -22,16 +21,13 @@ jobs:
         echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
     - name: Configure CMake
-      run: |
-        cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+      run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
 
     - name: Build
-      run: |
-        cmake --build build --config Release
+      run: cmake --build build --config Release
 
     - name: Run Unit Tests
-      run: |
-        ctest --test-dir build --output-on-failure
+      run: ctest --test-dir build --output-on-failure
 
     - name: Run Example & Test Visualization Tools
       run: |
@@ -40,3 +36,80 @@ jobs:
         lua test_mem.lua || lua5.3 test_mem.lua
         cd ../tools
         ./show.sh ../test
+
+  macos:
+    runs-on: macos-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Dependencies
+      run: |
+        brew update
+        brew install lua go || true
+        # Ensure lua headers/libs are discoverable
+        brew list lua
+
+    - name: Configure CMake
+      run: |
+        LUA_PREFIX="$(brew --prefix lua)"
+        cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
+          -DLUA_INCLUDE_DIR="${LUA_PREFIX}/include/lua" \
+          -DLUA_LIBRARIES="${LUA_PREFIX}/lib/liblua.dylib" \
+          || cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+
+    - name: Build
+      run: cmake --build build --config Release
+
+    - name: Run Unit Tests
+      run: ctest --test-dir build --output-on-failure
+
+  windows:
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.22'
+
+    - name: Install Lua (via chocolatey / vcpkg fallback)
+      shell: pwsh
+      run: |
+        choco install lua -y --no-progress
+        # Headers: download Lua source for includes if needed
+        if (-not (Test-Path "C:\Lua\include\lua.h")) {
+          Invoke-WebRequest -Uri "https://www.lua.org/ftp/lua-5.4.7.tar.gz" -OutFile "$env:RUNNER_TEMP\lua.tgz"
+          tar -xzf "$env:RUNNER_TEMP\lua.tgz" -C "$env:RUNNER_TEMP"
+          New-Item -ItemType Directory -Force -Path "C:\Lua\include" | Out-Null
+          Copy-Item "$env:RUNNER_TEMP\lua-5.4.7\src\*.h" "C:\Lua\include\"
+        }
+
+    - name: Configure CMake
+      shell: pwsh
+      run: |
+        $inc = "C:\ProgramData\chocolatey\lib\lua\tools\include"
+        if (-not (Test-Path $inc)) { $inc = "C:\Lua\include" }
+        $lib = "C:\ProgramData\chocolatey\lib\lua\tools"
+        cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF `
+          "-DLUA_INCLUDE_DIR=$inc" `
+          "-DLUA_LIBRARIES=$lib\lua54.lib" `
+          2>$null
+        if ($LASTEXITCODE -ne 0) {
+          # Fallback: try FindLua defaults after choco
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+        }
+
+    - name: Build
+      shell: pwsh
+      run: |
+        cmake --build build --config Release
+        if ($LASTEXITCODE -ne 0) {
+          Write-Host "Windows build failed — CI records the failure; see README for MSVC+Lua setup notes."
+          exit 1
+        }
+
+    - name: Check DLL artifact
+      shell: pwsh
+      run: |
+        Get-ChildItem -Recurse bin, build -Filter "*.dll" -ErrorAction SilentlyContinue | Format-Table FullName, Length
