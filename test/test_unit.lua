@@ -1,9 +1,17 @@
 -- Unit tests for pLua
 local cpath_candidates = {
     "../bin/?.so",
+    "../bin/?.dylib",
+    "../bin/?.dll",
     "../../bin/?.so",
+    "../../bin/?.dylib",
+    "../../bin/?.dll",
     "bin/?.so",
-    "./?.so"
+    "bin/?.dylib",
+    "bin/?.dll",
+    "./?.so",
+    "./?.dylib",
+    "./?.dll",
 }
 for _, p in ipairs(cpath_candidates) do
     package.cpath = p .. ";" .. package.cpath
@@ -21,6 +29,14 @@ local function remove_file(filepath)
     os.remove(filepath)
 end
 
+local function read_magic(filepath)
+    local f = io.open(filepath, "rb")
+    if not f then return nil end
+    local magic = f:read(4)
+    f:close()
+    return magic
+end
+
 print("========================================")
 print("Running pLua Unit Tests")
 print("========================================")
@@ -34,7 +50,18 @@ assert(type(plua.start) == "function", "Missing function plua.start")
 assert(type(plua.stop) == "function", "Missing function plua.stop")
 assert(type(plua.start_mem) == "function", "Missing function plua.start_mem")
 assert(type(plua.stop_mem) == "function", "Missing function plua.stop_mem")
+assert(type(plua.set_config) == "function", "Missing function plua.set_config")
+assert(type(plua.get_config) == "function", "Missing function plua.get_config")
 print("  -> Passed: libplua module and API functions loaded successfully")
+
+-- 1b. Config API
+print("[Test 1b] Config API...")
+local cfg = plua.get_config()
+assert(type(cfg) == "table", "get_config should return a table")
+assert(type(cfg.cpu_interval_ms) == "number", "cpu_interval_ms missing")
+assert(type(cfg.mem_rate) == "number", "mem_rate missing")
+assert(plua.set_config({ cpu_interval_ms = cfg.cpu_interval_ms, mem_rate = cfg.mem_rate }) == 0)
+print("  -> Passed: config get/set OK (backend=" .. tostring(cfg.cpu_backend) .. ")")
 
 -- 2. Test CPU Profiling
 print("[Test 2] CPU Profiling...")
@@ -66,6 +93,7 @@ ret = plua.stop()
 assert(ret == 0, "plua.stop returned error: " .. tostring(ret))
 
 assert(file_exists_and_not_empty(cpu_out), "CPU profile file was not created or is empty: " .. cpu_out)
+assert(read_magic(cpu_out) == "PLUA", "CPU profile missing PLUA magic header")
 print("  -> Passed: CPU profile generated successfully (" .. cpu_out .. ")")
 
 -- 3. Test Memory Profiling
@@ -90,9 +118,10 @@ assert(stop_ret == 0, "plua.stop_mem returned error: " .. tostring(stop_ret))
 
 assert(file_exists_and_not_empty(mem_alloc), "Memory ALLOC_SIZE profile not created: " .. mem_alloc)
 assert(file_exists_and_not_empty(mem_usage), "Memory USAGE profile not created: " .. mem_usage)
+assert(read_magic(mem_alloc) == "PLUA", "mem profile missing PLUA magic")
 print("  -> Passed: Memory profiles generated successfully (" .. mem_alloc .. ", " .. mem_usage .. ")")
 
--- 4. Test Guard Against Concurrent Profiling
+-- 4. Test Guard Against Concurrent Profiling (same state, same mode)
 print("[Test 4] Concurrent Profiling Guards...")
 local guard_out = "unit_guard_test.pro"
 remove_file(guard_out)
@@ -107,6 +136,23 @@ plua.stop()
 remove_file(guard_out)
 print("  -> Passed: Re-entrancy guard correctly rejected concurrent start")
 
+-- 5. Independent CPU + mem on same state
+print("[Test 5] Independent CPU + Memory...")
+remove_file(cpu_out)
+remove_file(mem_alloc)
+remove_file(mem_usage)
+assert(plua.start(0, cpu_out) == 0)
+assert(plua.start_mem(0, mem_out) == 0)
+for i = 1, 20 do cpu_work() end
+holder = {}
+for i = 1, 20000 do holder[i] = { i = i } end
+collectgarbage("collect")
+assert(plua.stop() == 0)
+assert(plua.stop_mem() == 0)
+assert(file_exists_and_not_empty(cpu_out))
+assert(file_exists_and_not_empty(mem_alloc))
+print("  -> Passed: CPU and mem can run together on one state")
+
 -- Cleanup
 remove_file(cpu_out)
 remove_file(mem_alloc)
@@ -116,3 +162,4 @@ remove_file("plua.log")
 print("========================================")
 print("ALL UNIT TESTS PASSED SUCCESSFULLY!")
 print("========================================")
+print("Note: multi-lua_State coverage lives in the C++ unit_test (--multistate).")
