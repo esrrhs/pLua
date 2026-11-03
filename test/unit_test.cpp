@@ -115,6 +115,32 @@ static int run_basic_tests() {
     std::remove(mem_usage);
     std::cout << "  -> Independent CPU+mem OK" << std::endl;
 
+    std::cout << "[C++ Test] Testing status() API..." << std::endl;
+    r = luaL_dostring(L,
+        "local p = require('libplua')\n"
+        "local st = p.status()\n"
+        "assert(type(st) == 'table')\n"
+        "assert(st.cpu_running == false)\n"
+        "assert(st.mem_running == false)\n"
+        "assert(type(st.cpu_samples) == 'number')\n"
+        "assert(type(st.cpu_backend) == 'string')\n"
+        "assert(type(st.config) == 'table')\n"
+        "p.start(0, 'cpp_test_cpu.pro')\n"
+        "st = p.status()\n"
+        "assert(st.cpu_running == true)\n"
+        "assert(st.cpu_output == 'cpp_test_cpu.pro')\n"
+        "for i = 1, 10 do end\n"
+        "p.stop()\n"
+        "st = p.status()\n"
+        "assert(st.cpu_running == false)\n"
+    );
+    if (r != 0) {
+        std::cerr << lua_tostring(L, -1) << std::endl;
+    }
+    ASSERT_TRUE(r == 0);
+    std::remove(cpu_file);
+    std::cout << "  -> status() OK" << std::endl;
+
     lua_close(L);
     std::cout << "[C++ Test] All basic C++ unit tests passed!" << std::endl;
     return 0;
@@ -210,6 +236,44 @@ static int run_multistate_tests() {
     ASSERT_TRUE(file_exists_and_non_empty(cpu2));
     std::remove(cpu1); std::remove(cpu2);
     std::cout << "  -> stop-one-leaves-other OK" << std::endl;
+
+    std::cout << "[C++ MultiState] close-after-stop / restart..." << std::endl;
+    // Stop then close should not crash (registry __gc unregisters session).
+    {
+        lua_State *Lx = luaL_newstate();
+        ASSERT_TRUE(Lx != nullptr);
+        luaL_openlibs(Lx);
+        register_plua(Lx);
+        ASSERT_TRUE(luaL_dostring(Lx, "require('libplua').start(0, 'ms_close.pro')") == 0);
+        busy_work(Lx);
+        ASSERT_TRUE(luaL_dostring(Lx, "require('libplua').stop()") == 0);
+        ASSERT_TRUE(file_exists_and_non_empty("ms_close.pro"));
+        std::remove("ms_close.pro");
+        lua_close(Lx); // exercises session_anchor __gc
+    }
+    // Start/stop/start again on a fresh state after previous close
+    {
+        lua_State *Ly = luaL_newstate();
+        ASSERT_TRUE(Ly != nullptr);
+        luaL_openlibs(Ly);
+        register_plua(Ly);
+        ASSERT_TRUE(luaL_dostring(Ly,
+            "local p = require('libplua')\n"
+            "assert(p.start(0, 'ms_restart.pro') == 0)\n"
+            "local st = p.status()\n"
+            "assert(st.cpu_running)\n"
+            "p.stop()\n"
+            "assert(p.status().cpu_running == false)\n"
+            "assert(p.start(0, 'ms_restart.pro') == 0)\n"
+            "p.stop()\n"
+        ) == 0);
+        ASSERT_TRUE(file_exists_and_non_empty("ms_restart.pro"));
+        std::remove("ms_restart.pro");
+        // Explicit close API
+        ASSERT_TRUE(luaL_dostring(Ly, "require('libplua').close()") == 0);
+        lua_close(Ly);
+    }
+    std::cout << "  -> close-after-stop / restart OK" << std::endl;
 
     lua_close(L1);
     lua_close(L2);

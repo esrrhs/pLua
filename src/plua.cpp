@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <unordered_set>
 #include <set>
+#include <atomic>
 
 #if defined(_WIN32)
 #  define PLUA_WINDOWS 1
@@ -237,8 +238,9 @@ struct ProfilerSession {
     std::unordered_map<std::string, int> string2Id;
     std::unordered_map<int, std::string> id2String;
 
-    bool pendingCpuSample = false;
-    bool pendingMemSample = false;
+    // Atomically set from SIGPROF; drained only inside SessionHook (never lua_sethook in signal).
+    std::atomic<bool> pendingCpuSample{false};
+    std::atomic<bool> pendingMemSample{false};
 };
 
 static std::map<lua_State *, ProfilerSession *> gSessions;
@@ -281,6 +283,20 @@ static void load_env_defaults() {
 #endif
 }
 
+// Registry userdata (__gc) keeps session lifetime tied to lua_State close (Lua 5.2+).
+static const char *kSessionAnchorKey = "plua.session_anchor";
+
+struct SessionAnchor {
+    lua_State *owner = NULL;
+};
+
+static void destroy_session(ProfilerSession *s); // fwd
+static void ensure_session_anchor(lua_State *L); // fwd
+static void clear_string_tables(ProfilerSession *s);
+static void flush_cpu(ProfilerSession *s);
+static void flush_mem(ProfilerSession *s);
+static void rearm_session_hook(ProfilerSession *s);
+
 static ProfilerSession *get_session(lua_State *L, bool create) {
     auto it = gSessions.find(L);
     if (it != gSessions.end()) {
@@ -294,7 +310,98 @@ static ProfilerSession *get_session(lua_State *L, bool create) {
     s->cpuHookCount = gDefaultCpuHookCount;
     s->memProfileRate = gDefaultMemProfileRate;
     gSessions[L] = s;
+    ensure_session_anchor(L);
     return s;
+}
+
+static int session_anchor_gc(lua_State *L) {
+    SessionAnchor *a = (SessionAnchor *)lua_touserdata(L, 1);
+    if (!a || !a->owner) return 0;
+    lua_State *owner = a->owner;
+    a->owner = NULL;
+    auto it = gSessions.find(owner);
+    if (it == gSessions.end()) return 0;
+    destroy_session(it->second);
+    return 0;
+}
+
+static void ensure_session_anchor(lua_State *L) {
+    lua_getfield(L, LUA_REGISTRYINDEX, kSessionAnchorKey);
+    if (!lua_isnil(L, -1)) {
+        lua_pop(L, 1);
+        return;
+    }
+    lua_pop(L, 1);
+
+    SessionAnchor *a = (SessionAnchor *)lua_newuserdata(L, sizeof(SessionAnchor));
+    a->owner = L;
+
+    if (luaL_newmetatable(L, "plua.session_anchor")) {
+        lua_pushcfunction(L, session_anchor_gc);
+        lua_setfield(L, -2, "__gc");
+    }
+    lua_setmetatable(L, -2);
+    lua_setfield(L, LUA_REGISTRYINDEX, kSessionAnchorKey);
+}
+
+// Tear down profiling resources and remove session from gSessions.
+static void destroy_session(ProfilerSession *s) {
+    if (!s) return;
+    lua_State *L = s->L;
+
+    s->pendingCpuSample.store(false, std::memory_order_relaxed);
+    s->pendingMemSample.store(false, std::memory_order_relaxed);
+
+#if defined(PLUA_HAS_POSIX_PROF)
+    if (s->useSigprof) {
+        // stop_posix_timer defined later; inline ref-count drop here via flag then call after decl
+        s->cpuRunning = false;
+    }
+#endif
+    s->cpuRunning = false;
+    s->memRunning = false;
+
+#if defined(PLUA_HAS_POSIX_PROF)
+    if (s->useSigprof) {
+        if (gPosixTimerUsers > 0) {
+            gPosixTimerUsers--;
+            if (gPosixTimerUsers == 0) {
+                struct itimerval timer;
+                memset(&timer, 0, sizeof(timer));
+                setitimer(ITIMER_PROF, &timer, NULL);
+            }
+        }
+        s->useSigprof = false;
+    }
+#endif
+
+    if (L && s->memData.oldAlloc) {
+        lua_setallocf(L, s->memData.oldAlloc, s->memData.oldAllocUd);
+        s->memData.oldAlloc = NULL;
+        s->memData.oldAllocUd = NULL;
+    }
+
+    if (L) {
+        lua_sethook(L, 0, 0, 0);
+    }
+
+    flush_cpu(s);
+    flush_mem(s);
+    clear_string_tables(s);
+
+    if (L) {
+        gSessions.erase(L);
+    }
+    s->L = NULL;
+    delete s;
+}
+
+static void release_session_if_idle(ProfilerSession *s) {
+    if (!s) return;
+    if (s->cpuRunning || s->memRunning) return;
+    if (s->cpuData.fd >= 0 || s->memData.alloc_size_fd >= 0 || s->memData.usage_fd >= 0) return;
+    if (s->memData.oldAlloc) return;
+    destroy_session(s);
 }
 
 static void clear_string_tables(ProfilerSession *s) {
@@ -488,8 +595,6 @@ static void flush_mem(ProfilerSession *s) {
     printf("pLua flush ok %d\n", total);
 }
 
-static void rearm_session_hook(ProfilerSession *s);
-
 static void take_cpu_sample(ProfilerSession *s) {
     if (!s->cpuRunning) return;
     if (s->cpuSampleLimit != 0 && s->cpuSampleLimit <= s->cpuData.total) {
@@ -526,16 +631,15 @@ static void take_mem_sample(ProfilerSession *s) {
 }
 
 static void SessionHook(lua_State *L, lua_Debug *par) {
+    (void)par;
     ProfilerSession *s = get_session(L, false);
-    if (!s) {
+    if (!s || s->L != L) {
         lua_sethook(L, 0, 0, 0);
         return;
     }
 
-    bool didCpu = s->pendingCpuSample;
-    bool didMem = s->pendingMemSample;
-    s->pendingCpuSample = false;
-    s->pendingMemSample = false;
+    bool didCpu = s->pendingCpuSample.exchange(false, std::memory_order_relaxed);
+    bool didMem = s->pendingMemSample.exchange(false, std::memory_order_relaxed);
 
     if (didCpu) {
         if (s->cpuRunning && (s->cpuSampleLimit == 0 || s->cpuSampleLimit > s->cpuData.total)) {
@@ -558,6 +662,8 @@ static void SessionHook(lua_State *L, lua_Debug *par) {
             flush_cpu(s);
             if (!s->memRunning) {
                 clear_string_tables(s);
+                release_session_if_idle(s);
+                return; // session may be deleted
             }
         }
     }
@@ -569,33 +675,46 @@ static void SessionHook(lua_State *L, lua_Debug *par) {
 }
 
 static void rearm_session_hook(ProfilerSession *s) {
-    if (!s) return;
-    if (s->pendingCpuSample || s->pendingMemSample) {
+    if (!s || !s->L) return;
+    if (s->pendingCpuSample.load(std::memory_order_relaxed) ||
+        s->pendingMemSample.load(std::memory_order_relaxed)) {
         lua_sethook(s->L, SessionHook, LUA_MASKCOUNT, 1);
         return;
     }
-    // Count-backend continuous sampling
+    // Count-backend continuous sampling: every N VM instructions becomes one sample.
     if (s->cpuRunning && !s->useSigprof) {
+        s->pendingCpuSample.store(true, std::memory_order_relaxed);
         lua_sethook(s->L, SessionHook, LUA_MASKCOUNT, s->cpuHookCount);
-        s->pendingCpuSample = true; // next count fires a sample
+        return;
+    }
+    // SIGPROF backend: keep a drain hook armed. Signal only sets pendingCpuSample;
+    // actual sampling happens here (never lua_sethook from the signal handler).
+    if (s->cpuRunning && s->useSigprof) {
+        int step = s->cpuHookCount > 0 ? s->cpuHookCount : DEFAULT_CPU_HOOK_COUNT;
+        lua_sethook(s->L, SessionHook, LUA_MASKCOUNT, step);
         return;
     }
     lua_sethook(s->L, 0, 0, 0);
 }
 
 static void request_hook(ProfilerSession *s, bool cpu, bool mem) {
-    if (cpu) s->pendingCpuSample = true;
-    if (mem) s->pendingMemSample = true;
-    lua_sethook(s->L, SessionHook, LUA_MASKCOUNT, 1);
+    // Called from Lua alloc path / safe contexts — NOT from the POSIX signal handler.
+    if (cpu) s->pendingCpuSample.store(true, std::memory_order_relaxed);
+    if (mem) s->pendingMemSample.store(true, std::memory_order_relaxed);
+    if (s->L) {
+        lua_sethook(s->L, SessionHook, LUA_MASKCOUNT, 1);
+    }
 }
 
 #if defined(PLUA_HAS_POSIX_PROF)
 static void SignalHandler(int sig, siginfo_t *sinfo, void *ucontext) {
     (void)sig; (void)sinfo; (void)ucontext;
+    // Async-signal-safe path: only mark sample pending. Do NOT call lua_sethook
+    // or any Lua / allocator / non-AS-safe API here (historical crash risk #8).
     for (auto &kv : gSessions) {
         ProfilerSession *s = kv.second;
-        if (s->cpuRunning && s->useSigprof) {
-            request_hook(s, true, false);
+        if (s && s->L && s->cpuRunning && s->useSigprof) {
+            s->pendingCpuSample.store(true, std::memory_order_relaxed);
         }
     }
 }
@@ -673,16 +792,18 @@ static int lrealstopsafe(lua_State *L) {
     if (!s) {
         return 0;
     }
-    // lrealstop may have cleared cpuRunning already (async stop); still tear down.
-    bool was_running = s->cpuRunning || s->cpuData.fd >= 0 || s->cpuData.total > 0;
-    if (!was_running) {
-        return 0;
+    // lrealstop may have cleared cpuRunning already (async stop / sample limit); still tear down.
+    bool was_running = s->cpuRunning || s->cpuData.fd >= 0 || s->cpuData.total > 0 || s->useSigprof;
+    if (was_running) {
+        s->cpuRunning = false;
+        stop_cpu_backend(s);
+        flush_cpu(s);
+        if (!s->memRunning) {
+            clear_string_tables(s);
+        }
     }
-    s->cpuRunning = false;
-    stop_cpu_backend(s);
-    flush_cpu(s);
     if (!s->memRunning) {
-        clear_string_tables(s);
+        release_session_if_idle(s);
     }
     return 0;
 }
@@ -764,8 +885,23 @@ static int lstart(lua_State *L) {
         int ms = (int)lua_tointeger(L, 3);
         if (ms > 0) gDefaultCpuIntervalMs = ms;
     }
+    if (!file) {
+        lua_pushinteger(L, -1);
+        lua_pushstring(L, "cpu start failed: missing output path");
+        return 2;
+    }
+    ProfilerSession *existing = get_session(L, false);
+    if (existing && existing->cpuRunning) {
+        lua_pushinteger(L, -1);
+        lua_pushstring(L, "cpu start failed: already running on this lua_State");
+        return 2;
+    }
     int ret = lrealstart(L, second, file);
     lua_pushinteger(L, ret);
+    if (ret != 0) {
+        lua_pushstring(L, "cpu start failed: could not start profiler (file or backend error)");
+        return 2;
+    }
     return 1;
 }
 
@@ -820,6 +956,7 @@ static int lrealstopmemsafe(lua_State *L) {
     if (!s->cpuRunning) {
         clear_string_tables(s);
         rearm_session_hook(s);
+        release_session_if_idle(s);
     }
     return 0;
 }
@@ -989,8 +1126,23 @@ static int lstart_mem(lua_State *L) {
         int rate = (int)lua_tointeger(L, 3);
         if (rate > 0) gDefaultMemProfileRate = rate;
     }
+    if (!file) {
+        lua_pushinteger(L, -1);
+        lua_pushstring(L, "mem start failed: missing output path");
+        return 2;
+    }
+    ProfilerSession *existing = get_session(L, false);
+    if (existing && existing->memRunning) {
+        lua_pushinteger(L, -1);
+        lua_pushstring(L, "mem start failed: already running on this lua_State");
+        return 2;
+    }
     int ret = lrealstartmem(L, count, file);
     lua_pushinteger(L, ret);
+    if (ret != 0) {
+        lua_pushstring(L, "mem start failed: could not start profiler (file or setup error)");
+        return 2;
+    }
     return 1;
 }
 
@@ -1000,6 +1152,92 @@ static int lstop_mem(lua_State *L) {
     int ret = lrealstopmem(L);
     lrealstopmemsafe(L);
     lua_pushinteger(L, ret);
+    return 1;
+}
+
+static void push_config_table(lua_State *L) {
+    lua_newtable(L);
+    lua_pushinteger(L, gDefaultCpuIntervalMs);
+    lua_setfield(L, -2, "cpu_interval_ms");
+    lua_pushinteger(L, gDefaultCpuHookCount);
+    lua_setfield(L, -2, "cpu_hook_count");
+    lua_pushinteger(L, gDefaultMemProfileRate);
+    lua_setfield(L, -2, "mem_rate");
+#if defined(PLUA_HAS_POSIX_PROF)
+    lua_pushstring(L, gForceCountBackend ? "count" : "sigprof");
+#else
+    lua_pushstring(L, "count");
+#endif
+    lua_setfield(L, -2, "cpu_backend");
+}
+
+static int lstatus(lua_State *L) {
+    load_env_defaults();
+    ProfilerSession *s = get_session(L, false);
+
+    lua_newtable(L);
+    lua_pushboolean(L, s && s->cpuRunning);
+    lua_setfield(L, -2, "cpu_running");
+    lua_pushboolean(L, s && s->memRunning);
+    lua_setfield(L, -2, "mem_running");
+    lua_pushinteger(L, s ? s->cpuData.total : 0);
+    lua_setfield(L, -2, "cpu_samples");
+    lua_pushinteger(L, s ? s->memData.total : 0);
+    lua_setfield(L, -2, "mem_samples");
+
+    if (s && !s->cpuFilename.empty()) {
+        lua_pushstring(L, s->cpuFilename.c_str());
+    } else {
+        lua_pushnil(L);
+    }
+    lua_setfield(L, -2, "cpu_output");
+
+    if (s && !s->memFilename.empty()) {
+        lua_pushstring(L, s->memFilename.c_str());
+    } else {
+        lua_pushnil(L);
+    }
+    lua_setfield(L, -2, "mem_output");
+
+    if (s && s->cpuRunning) {
+        lua_pushstring(L, s->useSigprof ? "sigprof" : "count");
+    } else {
+#if defined(PLUA_HAS_POSIX_PROF)
+        lua_pushstring(L, gForceCountBackend ? "count" : "sigprof");
+#else
+        lua_pushstring(L, "count");
+#endif
+    }
+    lua_setfield(L, -2, "cpu_backend");
+
+    push_config_table(L);
+    lua_setfield(L, -2, "config");
+    return 1;
+}
+
+// Explicit session teardown (also happens automatically on lua_close via registry __gc,
+// and when both cpu/mem are fully stopped).
+static int lclose(lua_State *L) {
+    ProfilerSession *s = get_session(L, false);
+    if (!s) {
+        lua_pushinteger(L, 0);
+        return 1;
+    }
+    if (s->cpuRunning || s->cpuData.fd >= 0 || s->cpuData.total > 0) {
+        lrealstop(L);
+        lrealstopsafe(L);
+        s = get_session(L, false);
+    }
+    if (s && (s->memRunning || s->memData.oldAlloc ||
+              s->memData.alloc_size_fd >= 0 || s->memData.usage_fd >= 0)) {
+        lrealstopmem(L);
+        lrealstopmemsafe(L);
+        s = get_session(L, false);
+    }
+    if (s) {
+        destroy_session(s);
+    }
+    lua_pushinteger(L, 0);
     return 1;
 }
 
@@ -1046,19 +1284,7 @@ static int lset_config(lua_State *L) {
 
 static int lget_config(lua_State *L) {
     load_env_defaults();
-    lua_newtable(L);
-    lua_pushinteger(L, gDefaultCpuIntervalMs);
-    lua_setfield(L, -2, "cpu_interval_ms");
-    lua_pushinteger(L, gDefaultCpuHookCount);
-    lua_setfield(L, -2, "cpu_hook_count");
-    lua_pushinteger(L, gDefaultMemProfileRate);
-    lua_setfield(L, -2, "mem_rate");
-#if defined(PLUA_HAS_POSIX_PROF)
-    lua_pushstring(L, gForceCountBackend ? "count" : "sigprof");
-#else
-    lua_pushstring(L, "count");
-#endif
-    lua_setfield(L, -2, "cpu_backend");
+    push_config_table(L);
     return 1;
 }
 
@@ -1068,6 +1294,8 @@ static void register_plua_api(lua_State *L) {
             {"stop",       lstop},
             {"start_mem",  lstart_mem},
             {"stop_mem",   lstop_mem},
+            {"status",     lstatus},
+            {"close",      lclose},
             {"set_config", lset_config},
             {"get_config", lget_config},
             {NULL, NULL},

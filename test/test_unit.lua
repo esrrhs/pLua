@@ -52,6 +52,8 @@ assert(type(plua.start_mem) == "function", "Missing function plua.start_mem")
 assert(type(plua.stop_mem) == "function", "Missing function plua.stop_mem")
 assert(type(plua.set_config) == "function", "Missing function plua.set_config")
 assert(type(plua.get_config) == "function", "Missing function plua.get_config")
+assert(type(plua.status) == "function", "Missing function plua.status")
+assert(type(plua.close) == "function", "Missing function plua.close")
 print("  -> Passed: libplua module and API functions loaded successfully")
 
 -- 1b. Config API
@@ -152,6 +154,49 @@ assert(plua.stop_mem() == 0)
 assert(file_exists_and_not_empty(cpu_out))
 assert(file_exists_and_not_empty(mem_alloc))
 print("  -> Passed: CPU and mem can run together on one state")
+
+-- 6. status() API
+print("[Test 6] status() API...")
+local st = plua.status()
+assert(type(st) == "table", "status should return a table")
+assert(st.cpu_running == false)
+assert(st.mem_running == false)
+assert(type(st.cpu_samples) == "number")
+assert(type(st.mem_samples) == "number")
+assert(type(st.cpu_backend) == "string")
+assert(type(st.config) == "table")
+assert(plua.start(0, cpu_out) == 0)
+st = plua.status()
+assert(st.cpu_running == true, "cpu_running should be true after start")
+assert(st.cpu_output == cpu_out)
+for i = 1, 20 do cpu_work() end
+assert(plua.stop() == 0)
+st = plua.status()
+assert(st.cpu_running == false)
+-- clearer error on double-start
+assert(plua.start(0, cpu_out) == 0)
+local r2, err2 = plua.start(0, cpu_out)
+assert(r2 == -1, "second start should fail")
+assert(type(err2) == "string" and #err2 > 0, "start failure should return error message")
+plua.stop()
+remove_file(cpu_out)
+print("  -> Passed: status() and start error messages OK")
+
+-- 7. close() after stop
+print("[Test 7] close() after stop...")
+assert(plua.start(0, cpu_out) == 0)
+for i = 1, 10 do cpu_work() end
+assert(plua.stop() == 0)
+assert(plua.close() == 0)
+st = plua.status()
+assert(st.cpu_running == false)
+assert(st.mem_running == false)
+-- can start again after close
+assert(plua.start(0, cpu_out) == 0)
+for i = 1, 10 do cpu_work() end
+assert(plua.stop() == 0)
+remove_file(cpu_out)
+print("  -> Passed: close() and restart OK")
 
 -- Cleanup
 remove_file(cpu_out)
