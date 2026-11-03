@@ -137,7 +137,8 @@ jobs:
       shell: pwsh
       run: |
         $ErrorActionPreference = 'Stop'
-        cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF `
+        # Enable tests: unit_test links against the Lua we built above (lua54.lib).
+        cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON `
           "-DLUA_INCLUDE_DIR=$env:LUA_INCLUDE_DIR" `
           "-DLUA_LIBRARY=$env:LUA_LIBRARY" `
           "-DLUA_LIBRARIES=$env:LUA_LIBRARY"
@@ -149,6 +150,44 @@ jobs:
         $ErrorActionPreference = 'Stop'
         cmake --build build --config Release
         if ($LASTEXITCODE -ne 0) { throw "Windows build failed" }
+
+    - name: Stage runtime DLLs
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        # unit_test.exe / libplua.dll land under bin/ (or bin/Release). lua54.dll must sit beside them.
+        $dirs = @('bin', 'bin/Release', 'bin/Debug', 'build/bin', 'build/Release', 'build/Debug')
+        $targets = @()
+        foreach ($d in $dirs) {
+          if (Test-Path $d) { $targets += (Resolve-Path $d).Path }
+        }
+        $dlls = @(Get-ChildItem -Recurse bin, build -Filter "libplua.dll" -ErrorAction SilentlyContinue)
+        $dlls | Format-Table FullName, Length
+        if ($dlls.Count -lt 1) { throw "libplua.dll not produced" }
+        $luaDll = Join-Path $env:LUA_PREFIX "bin\lua54.dll"
+        if (-not (Test-Path $luaDll)) { throw "lua54.dll missing at $luaDll" }
+        foreach ($t in $targets) {
+          Copy-Item $luaDll -Destination $t -Force
+          foreach ($d in $dlls) {
+            Copy-Item $d.FullName -Destination $t -Force -ErrorAction SilentlyContinue
+          }
+        }
+        # Also copy next to each unit_test.exe
+        $exes = @(Get-ChildItem -Recurse bin, build -Filter "unit_test.exe" -ErrorAction SilentlyContinue)
+        foreach ($e in $exes) {
+          Copy-Item $luaDll -Destination $e.DirectoryName -Force
+          foreach ($d in $dlls) {
+            Copy-Item $d.FullName -Destination $e.DirectoryName -Force -ErrorAction SilentlyContinue
+          }
+        }
+        Write-Host "Staged lua54.dll beside test binaries"
+
+    - name: Run Unit Tests
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        ctest --test-dir build -C Release --output-on-failure
+        if ($LASTEXITCODE -ne 0) { throw "Windows ctest failed" }
 
     - name: Check DLL artifact
       shell: pwsh
