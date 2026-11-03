@@ -21,6 +21,7 @@ Similar to `gperftools`, **pLua** profiles CPU hotspots and memory allocations f
 - **Multi-state**: Each `lua_State` has its own profiler session. You can profile several states in one process. **Multi-state is not multi-OS-thread safe** — do not call pLua from multiple OS threads concurrently without external synchronization.
 - **Independent CPU / Memory**: CPU and memory profiling use separate running flags; both can run at the same time on one state.
 - **Configurable rates**: `set_config` / `get_config`, environment variables, and optional rate arguments on `start` / `start_mem`.
+- **Runtime status**: `status()` reports whether CPU/mem are running, sample counts, output paths, backend, and a config snapshot. `close()` tears down the session for the current `lua_State`.
 - **Lightweight**: Sampling approach keeps runtime overhead low.
 - **Intuitive**: Outputs call graphs compatible with `pprof` (`gperftools`) and FlameGraph collapsed stacks / SVGs.
 
@@ -200,7 +201,40 @@ Each state keeps an independent session (CPU and/or mem). Stopping one state doe
 
 ---
 
-### 4. Configurable sample rates
+### 4. Hook exclusivity & coroutine boundaries
+
+**`lua_sethook` exclusivity.** pLua installs its own debug hook via `lua_sethook` for CPU sampling (and briefly when arming mem samples). It expects **exclusive** ownership of the hook on that `lua_State` while profiling:
+
+- Do **not** run another debugger / profiler / coverage tool that also calls `lua_sethook` on the same state at the same time — they will overwrite each other and produce wrong or missing samples (or break the other tool).
+- Stop pLua (`stop` / `stop_mem` / `close`) before attaching a different hook-based tool.
+
+**Coroutines.** `coroutine.create` (and related APIs) produce a **new** Lua thread that shares the global state but **does not inherit** the parent's debug hook. Child coroutines are **not** profiled automatically:
+
+- Call `start` / `start_mem` on each coroutine/`lua_State` you care about, **or**
+- Only interpret profiles as covering the thread(s) where you explicitly started pLua.
+
+Session cleanup: stopping both CPU and mem (or calling `close`) unregisters the session; `lua_close` also drops it via a registry userdata `__gc` (no dangling `gSessions` entry).
+
+---
+
+### 5. Runtime status
+
+```lua
+local st = p.status()
+-- st.cpu_running / st.mem_running  (boolean)
+-- st.cpu_samples / st.mem_samples  (number, samples collected so far)
+-- st.cpu_output / st.mem_output    (path or nil)
+-- st.cpu_backend                   ("sigprof" or "count")
+-- st.config                        (same shape as get_config())
+
+p.close()  -- stop cpu+mem if needed and free the session for this state
+```
+
+On start failure, `start` / `start_mem` return `-1` plus an error string as the second result (e.g. already running, missing path).
+
+---
+
+### 6. Configurable sample rates
 
 Lua API:
 

@@ -21,6 +21,7 @@ Lua 性能及内存分析工具。
 - **多 State**：每个 `lua_State` 拥有独立会话，可在同一进程中对多个 State 分别采样。**多 State ≠ 多 OS 线程安全**——不要在未加同步的情况下从多个 OS 线程并发调用 pLua。
 - **CPU / 内存独立开关**：`cpuRunning` / `memRunning` 分离，同一 State 上可同时开启。
 - **可配置采样率**：`set_config` / `get_config`、环境变量，以及 `start` / `start_mem` 的可选速率参数。
+- **运行时状态查询**：`status()` 可查看 CPU/内存是否在采、样本数、输出路径、当前后端与配置快照；`close()` 用于释放当前 `lua_State` 上的会话。
 - **轻量**：基于采样，对宿主性能影响小。
 - **直观**：兼容 `pprof`（`gperftools`），可生成折叠堆栈与火焰图 SVG。
 
@@ -198,7 +199,40 @@ p.stop_mem()
 
 ---
 
-### 4. 可配置采样率
+### 4. Hook 独占与协程边界
+
+**`lua_sethook` 独占。** pLua 通过 `lua_sethook` 安装调试钩子做 CPU 采样（内存采样武装时也会短暂使用）。在某个 `lua_State` 上采样期间，它假定 **独占** 该 State 的 hook：
+
+- **不要**在同一 State 上同时运行其它也会调用 `lua_sethook` 的调试器 / 分析器 / 覆盖率工具——彼此会互相覆盖，导致采样缺失或对方工具失效。
+- 在接入其它基于 hook 的工具之前，请先 `stop` / `stop_mem` / `close` 停止 pLua。
+
+**协程。** `coroutine.create`（及相关 API）会创建 **新的** Lua thread，共享全局状态但 **不会继承** 父线程的 debug hook。子协程 **不会** 自动被采样：
+
+- 对每个需要分析的协程 / `lua_State` 分别调用 `start` / `start_mem`，**或者**
+- 解读结果时，只把采样范围理解为「你显式 start 过的那些线程」。
+
+会话回收：CPU 与内存都停止后（或调用 `close`）会注销会话；`lua_close` 时也会通过 registry userdata 的 `__gc` 清理，避免 `gSessions` 残留悬空指针。
+
+---
+
+### 5. 运行时状态
+
+```lua
+local st = p.status()
+-- st.cpu_running / st.mem_running  (boolean)
+-- st.cpu_samples / st.mem_samples  (number，当前已采样本数)
+-- st.cpu_output / st.mem_output    (路径或 nil)
+-- st.cpu_backend                   ("sigprof" 或 "count")
+-- st.config                        (与 get_config() 同结构)
+
+p.close()  -- 如有需要会先 stop cpu/mem，并释放本 State 上的会话
+```
+
+`start` / `start_mem` 失败时返回 `-1`，并在第二个返回值给出错误说明（例如已在运行、缺少输出路径）。
+
+---
+
+### 6. 可配置采样率
 
 Lua API：
 
