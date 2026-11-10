@@ -38,6 +38,7 @@
 #  define O_CREAT _O_CREAT
 #  define O_WRONLY _O_WRONLY
 #  define O_TRUNC _O_TRUNC
+#  define O_BINARY _O_BINARY
 #  ifndef S_IRUSR
 #    define S_IRUSR _S_IREAD
 #    define S_IWUSR _S_IWRITE
@@ -48,6 +49,10 @@
 #  include <unistd.h>
 #  include <fcntl.h>
 #  define PLUA_HAS_POSIX_PROF 1
+#endif
+
+#ifndef O_BINARY
+#  define O_BINARY 0
 #endif
 
 extern "C" {
@@ -940,7 +945,7 @@ static int lrealstartsafe(lua_State *L) {
         init_ignore_names(s);
     }
 
-    int fd = open(s->cpuFilename.c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0666);
+    int fd = open(s->cpuFilename.c_str(), O_CREAT | O_WRONLY | O_TRUNC | O_BINARY, 0666);
     if (fd < 0) {
         LERR("open file fail %s", s->cpuFilename.c_str());
         return -1;
@@ -1177,7 +1182,7 @@ static int lrealstartmemsafe(lua_State *L) {
         init_ignore_names(s);
     }
 
-    int fd = open(get_mem_filename(s->memFilename, "_ALLOC_SIZE").c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0666);
+    int fd = open(get_mem_filename(s->memFilename, "_ALLOC_SIZE").c_str(), O_CREAT | O_WRONLY | O_TRUNC | O_BINARY, 0666);
     if (fd < 0) {
         LERR("open file fail %s", s->memFilename.c_str());
         return -1;
@@ -1185,7 +1190,7 @@ static int lrealstartmemsafe(lua_State *L) {
     if (!write_pro_header(fd)) { close(fd); return -1; }
     s->memData.alloc_size_fd = fd;
 
-    fd = open(get_mem_filename(s->memFilename, "_USAGE").c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0666);
+    fd = open(get_mem_filename(s->memFilename, "_USAGE").c_str(), O_CREAT | O_WRONLY | O_TRUNC | O_BINARY, 0666);
     if (fd < 0) {
         LERR("open file fail %s", s->memFilename.c_str());
         close(s->memData.alloc_size_fd);
