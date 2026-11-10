@@ -11,3 +11,12 @@ endif()
 
 # Multi-state tests need the C++ harness (two lua_State* in one process)
 add_test(NAME CppMultiStateTest COMMAND unit_test --multistate)
+
+add_executable(precision_test precision_test.cpp)
+target_include_directories(precision_test PRIVATE ${LUA_INCLUDE_DIR})
+target_link_libraries(precision_test PRIVATE plua ${LUA_LIBRARIES} ${CMAKE_DL_LIBS})
+add_test(NAME PrecisionDeterministicTest COMMAND precision_test)
+if(GO_EXECUTABLE)
+    add_test(NAME ConverterGoTest COMMAND ${GO_EXECUTABLE} test ./...
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/tools)
+endif()

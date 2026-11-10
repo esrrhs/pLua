@@ -17,13 +17,13 @@ Similar to `gperftools`, **pLua** profiles CPU hotspots and memory allocations f
 ## Features
 
 - **Easy to use**: A few lines of Lua to start/stop profiling. On **Linux** you can also inject into a running process via [hookso](https://github.com/esrrhs/hookso) without modifying code.
-- **Accurate**: On POSIX, default CPU backend uses periodic timer sampling (`ITIMER_PROF` / `SIGPROF`), capturing execution hotspots and excluding sleep/idle time. Falls back to `LUA_MASKCOUNT` on Windows, or when forced via config/env.
-- **Multi-state**: Each `lua_State` has its own profiler session. You can profile several states in one process. **Multi-state is not multi-OS-thread safe** — do not call pLua from multiple OS threads concurrently without external synchronization.
+- **CPU attribution**: POSIX uses `ITIMER_PROF` / `SIGPROF` ticks and safe-context Lua stack snapshots, including CPU-bound C calls. Windows (or forced fallback) samples VM instruction counts, **not C CPU time**. See precision limits below.
+- **Multi-state**: Each `lua_State` has its own profiler session. You can profile several states in one process. **Multi-state is not multi-OS-thread safe** — keep profiling on one OS thread; see the process-CPU caveat below.
 - **Independent CPU / Memory**: CPU and memory profiling use separate running flags; both can run at the same time on one state.
 - **Configurable rates**: `set_config` / `get_config`, environment variables, and optional rate arguments on `start` / `start_mem`.
 - **Runtime status**: `status()` reports whether CPU/mem are running, sample counts, output paths, backend, and a config snapshot. `close()` tears down the session for the current `lua_State`.
-- **Lightweight**: Sampling approach keeps runtime overhead low.
-- **Lua attribution through C**: When a sample lands while a C API / C callback is on the stack, pLua skips C frames (same idea as [vLua](https://github.com/esrrhs/vLua)) and records the nearest Lua frames (source/name/line). This is **not** a full native C unwind — only Lua call info is recovered.
+- **Configurable overhead**: Sampling frequency is tunable; call/return stack snapshots add workload-dependent overhead.
+- **Lua attribution through C**: Safe-boundary snapshots skip C frames (inspired by [vLua](https://github.com/esrrhs/vLua)) and retain the nearest Lua frames (existing source/name/function-definition information). This is **not** a full native C unwind — only Lua call info is recovered.
 - **Intuitive**: Outputs call graphs compatible with `pprof` (`gperftools`) and FlameGraph collapsed stacks / SVGs.
 
 ---
@@ -198,7 +198,7 @@ Each state keeps an independent session (CPU and/or mem). Stopping one state doe
 -- In host C/C++: create L1, L2, require libplua in each, call start/stop per state.
 ```
 
-**Thread safety:** pLua is safe for multiple `lua_State` values used from **one OS thread** (or with external synchronization). It is **not** safe to drive two states from two OS threads without external locking.
+**Thread safety:** use one OS thread for all pLua/Lua activity. Sessions and attribution snapshots are not thread-safe. The POSIX timer measures **process** CPU: other CPU-active native threads can contaminate attribution even if Lua access is externally locked. All concurrent SIGPROF sessions must use the same interval; conflicting starts return an error.
 
 ---
 
@@ -209,14 +209,17 @@ Each state keeps an independent session (CPU and/or mem). Stopping one state doe
 - Do **not** run another debugger / profiler / coverage tool that also calls `lua_sethook` on the same state at the same time — they will overwrite each other and produce wrong or missing samples (or break the other tool).
 - Stop pLua (`stop` / `stop_mem` / `close`) before attaching a different hook-based tool.
 
-**Coroutines.** `coroutine.create` (and related APIs) produce a **new** Lua thread that shares the global state but **does not inherit** the parent's debug hook. Child coroutines are **not** profiled automatically:
+**Coroutines.** Lua 5.2–5.4 may copy debug hooks to newly created threads, but that does **not** create a pLua session. Explicitly call `start` / `stop` inside every coroutine you want to profile. Enrolled coroutines are kept alive until stop/close or global `lua_close`.
 
-- Call `start` / `start_mem` on each coroutine/`lua_State` you care about, **or**
-- Only interpret profiles as covering the thread(s) where you explicitly started pLua.
+- Unenrolled coroutines created **after** profiling starts inherit boundary hooks on supported Lua versions; their CPU ticks are excluded, including across repeated yield/resume.
+- **Pre-existing/unhooked coroutines and uninstrumented Lua states entered from C cannot be detected by the public API.** Time there may be charged to the enclosing Lua caller of `coroutine.resume` / the C bridge. Enroll them explicitly or exclude such workloads when interpreting the parent profile.
+- Tail calls erase callers in Lua's debug stack: pLua does not invent those missing frames.
 
-Session cleanup: stopping both CPU and mem (or calling `close`) unregisters the session; `lua_close` also drops it via a registry userdata `__gc` (no dangling `gSessions` entry).
+Session cleanup: stop/close unregisters only that session; per-thread registry anchors also clean up active sessions on global `lua_close`. Stopping one coroutine does not invalidate another's anchor.
 
-**C frames.** Samples taken while execution is inside a C function (standard library, `lua_CFunction`, or a C→Lua callback still on the stack) **skip** those C frames and attribute to the topmost recoverable Lua frame. pLua does not unwind native C frames / symbols unless you already use an external native profiler.
+**C-time precision (POSIX).** Call, return and count hooks snapshot recoverable Lua/main frames, skipping C frames, in a normal VM context. The signal handler only increments a lock-free counter: **no Lua APIs, allocations, locks, session-map iteration, or native unwinding**. At the next boundary, all delivered ticks are charged to the **previous** snapshot before installing the new one. Thus a long C call retains multiple ticks and bills its Lua caller, not unrelated Lua work after its return; Lua→C→Lua callbacks update attribution at entry/return. A direct C `lrealstop(L)` also drains pending ticks and flushes; call it only on the VM thread in a safe context, never from a signal handler.
+
+This is not an exact interrupted-stack sampler like vLua's VM-internal approach: snapshots can be stale between hooks, error unwinds/continuations can skip return hooks, and hook execution itself adds overhead (especially call-heavy/deep-stack code). POSIX signals can coalesce **in the kernel**, and blocked/delayed signals cannot be reconstructed. Pure C with no recoverable Lua frame is excluded. Host CPU between observed VM exits/entries is excluded when no owner exists, but unobserved transitions have the limits above. pLua owns `SIGPROF` / `ITIMER_PROF`; do not combine it with another user of them. Profiles estimate CPU time as delivered ticks × configured interval, not exact elapsed time. Count backend samples only Lua VM instructions and cannot measure time spent in C.
 
 ---
 
@@ -264,15 +267,11 @@ Environment variables (read once at first use of start / config APIs):
 
 ---
 
-## `.pro` file format (v1)
+## `.pro` file format (CPU v2, memory v1)
 
-Versioned profiles start with:
+All integers in the existing little-endian format are 32-bit. CPU v2 starts with six `uint32` words: magic `0x41554C50` (`PLUA`), version `2`, kind `1` (CPU), backend `1` (SIGPROF) / `2` (count), interval in ms, and nominal VM hook instruction step. This metadata prevents guessing CPU units from filenames. Memory output remains v1 (magic + version `1`); v0 has no header.
 
-- magic `PLUA` (4 bytes, little-endian `0x41554C50`)
-- version `uint32` LE (currently `1`)
-- then the legacy payload (call stacks + trailing string table)
-
-`tools/plua` accepts both v1 (with header) and legacy files (no header, treated as version 0).
+The payload is unchanged: records contain count/weight, depth and 64 root-first frame IDs; the trailing string table contains `(name bytes, byte length, ID)` entries followed by entry count. Empty CPU profiles have a valid trailing table. SIGPROF weights count delivered ticks, count weights count hook samples, and memory weights are sampled allocation bytes / estimated live bytes. `tools/plua` reads v0/v1/v2, rejects unknown versions and malformed/truncated records. Old converters must be updated to read v2.
 
 ---
 
@@ -286,14 +285,34 @@ Go converter (built to `bin/plua` when Go is available):
 # FlameGraph collapsed stacks
 ./bin/plua -i call.pro -flame call.fl
 
-# pprof symbolized profile
+# Legacy gperftools symbolized profile (-pprof remains unchanged)
 ./bin/plua -i call.pro -pprof call.prof
 
-# Both
-./bin/plua -i call.pro -flame call.fl -pprof call.prof
+# Modern gzip profile.proto (CPU v2 only, no third-party Go dependencies)
+./bin/plua -i call.pro -proto call.pb.gz
+go tool pprof -top call.pb.gz
+go tool pprof -sample_index=samples -top call.pb.gz
+
+# Multiple outputs
+./bin/plua -i call.pro -flame call.fl -proto call.pb.gz -pprof call.prof
 ```
 
-`-collapsed` is an alias for `-flame`.
+`-collapsed` is an alias for `-flame`. `-proto` emits leaf-first stacks with valid function/location IDs and string-table index 0 empty. SIGPROF exports `samples/count` plus estimated `cpu/nanoseconds`, a CPU period, and count × interval weights. Count backend exports only `samples/count`, with nominal `instructions/count` period—never fabricated CPU nanoseconds. Simultaneous memory profiling can shorten some count-hook intervals. No timestamps/duration are invented.
+
+`-proto` deliberately rejects memory and legacy/v1 files: those lack reliable type/backend/period metadata. Keep using `-flame` / legacy `-pprof` for these; memory values must be interpreted as bytes, not CPU samples/time. Existing `show.sh` continues to use legacy output.
+
+### Precision and converter tests
+
+```shell
+cmake -S . -B build -DBUILD_TESTING=ON
+cmake --build build -j2
+ctest --test-dir build --output-on-failure
+(cd tools && go test ./... -v)
+# Optional statistical experiment; NOT a timing threshold in CI:
+./bin/precision_test --experiment
+```
+
+The deterministic suite injects delivered SIGPROF ticks and checks exact weights/leaf attribution: long C-boundary batches, C→Lua callbacks, pending-stop drain, erased tail callers, repeated coroutine resume, global close/restart and independent states. Windows runs count-backend checks only. Converter tests check metadata, units, stack order, IDs, truncation/malformed input, legacy/flame output, and invoke real `go tool pprof -top` on generated CPU/count fixtures. The optional experiment burns 600ms of C CPU and reports nominal 60-tick bias without flaky statistical assertions.
 
 ### Prerequisites (optional)
 

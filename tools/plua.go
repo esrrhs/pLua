@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bytes"
+	"compress/gzip"
 	"encoding/binary"
 	"flag"
 	"fmt"
 	"math"
 	"os"
+	"sort"
 	"strings"
 )
 
@@ -22,14 +25,16 @@ type CallStack struct {
 }
 
 type FileData struct {
-	version   uint32
-	str2id    map[string]int
-	id2str    map[int]string
-	callstack []CallStack
+	version                              uint32
+	kind, backend, intervalMs, hookCount uint32
+	str2id                               map[string]int
+	id2str                               map[int]string
+	callstack                            []CallStack
 }
 
 func main() {
 	input := flag.String("i", "", "input file (.pro)")
+	proto := flag.String("proto", "", "gzip profile.proto CPU output (modern go tool pprof)")
 	pprof := flag.String("pprof", "", "gen pprof symbolized-profiles")
 	flame := flag.String("flame", "", "gen flamegraph collapsed stacks file")
 	collapsed := flag.String("collapsed", "", "alias for -flame")
@@ -46,6 +51,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	if *proto != "" {
+		if err := showproto(filedata, *proto); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	}
 	if *pprof != "" {
 		showpprof(filedata, *pprof)
 	}
@@ -66,6 +77,10 @@ func parse(filename string) (*FileData, bool) {
 		return nil, false
 	}
 
+	return parseData(data)
+}
+
+func parseData(data []byte) (*FileData, bool) {
 	if len(data) < 4 {
 		fmt.Printf("data error too small\n")
 		return nil, false
@@ -73,20 +88,34 @@ func parse(filename string) (*FileData, bool) {
 
 	headerSize := 0
 	version := uint32(0)
+	var kind, backend, intervalMs, hookCount uint32
 	if len(data) >= 8 {
 		magic := binary.LittleEndian.Uint32(data[0:4])
 		if magic == proMagic {
 			version = binary.LittleEndian.Uint32(data[4:8])
-			if version < 1 {
+			if version < 1 || version > 2 {
 				fmt.Printf("unsupported .pro version %v\n", version)
 				return nil, false
 			}
 			headerSize = 8
+			if version == 2 {
+				headerSize = 24
+				if len(data) < headerSize+4 {
+					return nil, false
+				}
+				kind = binary.LittleEndian.Uint32(data[8:12])
+				backend = binary.LittleEndian.Uint32(data[12:16])
+				intervalMs = binary.LittleEndian.Uint32(data[16:20])
+				hookCount = binary.LittleEndian.Uint32(data[20:24])
+				if kind != 1 || (backend != 1 && backend != 2) || intervalMs == 0 || hookCount == 0 {
+					return nil, false
+				}
+			}
 		}
 	}
 
 	namemaplen := int(binary.LittleEndian.Uint32(data[len(data)-4 : len(data)]))
-	if namemaplen < 0 {
+	if len(data) < headerSize+4 || namemaplen > (len(data)-headerSize-4)/9 {
 		fmt.Printf("name map len fail %v\n", namemaplen)
 		return nil, false
 	}
@@ -126,12 +155,18 @@ func parse(filename string) (*FileData, bool) {
 		str := string(data[start:end])
 		end -= namelen
 
+		if _, exists := id2str[id]; exists {
+			return nil, false
+		}
 		str2id[str] = id
 		id2str[id] = str
 
 		namenum++
 	}
 
+	if (end-headerSize)%((MAX_STACK_SIZE+2)*4) != 0 {
+		return nil, false
+	}
 	callstack := make([]CallStack, 0)
 	for end > headerSize {
 		stacks := make([]int, MAX_STACK_SIZE)
@@ -167,11 +202,16 @@ func parse(filename string) (*FileData, bool) {
 		count := int(binary.LittleEndian.Uint32(data[start:end]))
 		end -= 4
 
-		if count <= 0 {
+		if count <= 0 || (version == 2 && count > math.MaxInt32) {
 			fmt.Printf("count error %v\n", count)
 			return nil, false
 		}
 
+		for _, id := range stacks[:deps] {
+			if _, ok := id2str[id]; !ok {
+				return nil, false
+			}
+		}
 		cs := CallStack{
 			count:  count,
 			deps:   deps,
@@ -182,7 +222,8 @@ func parse(filename string) (*FileData, bool) {
 	}
 
 	filedata := &FileData{
-		version:   version,
+		version: version,
+		kind:    kind, backend: backend, intervalMs: intervalMs, hookCount: hookCount,
 		str2id:    str2id,
 		id2str:    id2str,
 		callstack: callstack,
@@ -276,4 +317,121 @@ func showcollapsed(filedata *FileData, filename string) {
 	}
 
 	fmt.Printf("total collapsed sample %v\n", total)
+}
+
+// Minimal profile.proto wire encoder. Only varint and length-delimited fields
+// are needed; no generated runtime or external dependencies. Field numbers are
+// from github.com/google/pprof/proto/profile.proto.
+func pv(dst []byte, field int, v uint64) []byte {
+	dst = appendVarint(dst, uint64(field<<3))
+	return appendVarint(dst, v)
+}
+func pb(dst []byte, field int, v []byte) []byte {
+	dst = appendVarint(dst, uint64(field<<3|2))
+	dst = appendVarint(dst, uint64(len(v)))
+	return append(dst, v...)
+}
+
+func profileProto(f *FileData) ([]byte, error) {
+	// v0/v1 do not identify CPU vs memory or carry a sampling period. Guessing
+	// from filenames would silently turn bytes/instructions into CPU time.
+	if f.version != 2 || f.kind != 1 {
+		return nil, fmt.Errorf("-proto requires a v2 CPU .pro; legacy/v1 and memory profiles lack CPU metadata (use -flame or -pprof)")
+	}
+	stringsTable := []string{""}
+	stringsIndex := map[string]uint64{"": 0}
+	intern := func(s string) uint64 {
+		s = strings.ToValidUTF8(s, "?")
+		if i, ok := stringsIndex[s]; ok {
+			return i
+		}
+		i := uint64(len(stringsTable))
+		stringsIndex[s] = i
+		stringsTable = append(stringsTable, s)
+		return i
+	}
+	valueType := func(name, unit string) []byte { return pv(pv(nil, 1, intern(name)), 2, intern(unit)) }
+	var out []byte
+	out = pb(out, 1, valueType("samples", "count"))
+	if f.backend == 1 {
+		out = pb(out, 1, valueType("cpu", "nanoseconds"))
+		out = pb(out, 11, valueType("cpu", "nanoseconds"))
+		out = pv(out, 12, uint64(f.intervalMs)*1000000)
+	} else if f.backend == 2 {
+		out = pb(out, 11, valueType("instructions", "count"))
+		out = pv(out, 12, uint64(f.hookCount))
+	} else {
+		return nil, fmt.Errorf("unknown CPU backend %d", f.backend)
+	}
+	ids := make([]int, 0, len(f.id2str))
+	for id := range f.id2str {
+		ids = append(ids, id)
+	}
+	sort.Ints(ids)
+	locations := make(map[int]uint64)
+	for i, id := range ids {
+		n := uint64(i + 1)
+		locations[id] = n
+		function := pv(nil, 1, n)
+		function = pv(function, 2, intern(f.id2str[id]))
+		out = pb(out, 5, function)
+		line := pv(nil, 1, n)
+		location := pv(nil, 1, n)
+		location = pb(location, 4, line)
+		out = pb(out, 4, location)
+	}
+	for _, cs := range f.callstack {
+		if cs.count <= 0 || len(cs.stacks) == 0 {
+			return nil, fmt.Errorf("invalid sample")
+		}
+		var sample []byte
+		// .pro is root-first; profile.proto requires leaf-first location IDs.
+		for i := len(cs.stacks) - 1; i >= 0; i-- {
+			id, ok := locations[cs.stacks[i]]
+			if !ok {
+				return nil, fmt.Errorf("unknown frame ID")
+			}
+			sample = pv(sample, 1, id)
+		}
+		sample = pv(sample, 2, uint64(cs.count))
+		if f.backend == 1 {
+			period := uint64(f.intervalMs) * 1000000
+			if uint64(cs.count) > math.MaxInt64/period {
+				return nil, fmt.Errorf("CPU weight overflow")
+			}
+			sample = pv(sample, 2, uint64(cs.count)*period)
+		}
+		out = pb(out, 2, sample)
+	}
+	comment := "pLua: delivered SIGPROF ticks; estimated CPU time; boundary snapshots, no native unwinding"
+	if f.backend == 2 {
+		comment = "pLua: VM instruction sampling only; C time is not measured; samples are not CPU nanoseconds"
+	}
+	out = pv(out, 13, intern(comment))
+	for _, s := range stringsTable {
+		out = pb(out, 6, []byte(s))
+	}
+	return out, nil
+}
+
+func showproto(f *FileData, filename string) error {
+	data, err := profileProto(f)
+	if err != nil {
+		return err
+	}
+	var buf bytes.Buffer
+	z := gzip.NewWriter(&buf)
+	if _, err = z.Write(data); err != nil {
+		return err
+	}
+	if err = z.Close(); err != nil {
+		return err
+	}
+	return os.WriteFile(filename, buf.Bytes(), 0644)
+}
+
+func appendVarint(dst []byte, v uint64) []byte {
+	var b [10]byte
+	n := binary.PutUvarint(b[:], v)
+	return append(dst, b[:n]...)
 }

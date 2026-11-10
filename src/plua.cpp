@@ -19,6 +19,7 @@
 #include <unordered_set>
 #include <set>
 #include <atomic>
+#include <limits.h>
 
 #if defined(_WIN32)
 #  define PLUA_WINDOWS 1
@@ -244,7 +245,7 @@ struct ProfilerSession {
     std::unordered_map<std::string, int> string2Id;
     std::unordered_map<int, std::string> id2String;
 
-    // Atomically set from SIGPROF; drained only inside SessionHook (never lua_sethook in signal).
+    // Safe-context requests for count sampling and allocator-driven mem sampling.
     std::atomic<bool> pendingCpuSample{false};
     std::atomic<bool> pendingMemSample{false};
 };
@@ -253,6 +254,16 @@ static std::map<lua_State *, ProfilerSession *> gSessions;
 #if defined(PLUA_HAS_POSIX_PROF)
 static int gPosixTimerUsers = 0;
 static bool gSigHandlerInstalled = false;
+static int gPosixIntervalMs = 0;
+// The signal handler never touches sessions, Lua, containers, or snapshots.
+static_assert(ATOMIC_INT_LOCK_FREE == 2, "SIGPROF requires lock-free unsigned atomics");
+static std::atomic<unsigned> gCpuTicks{0};
+// Accessed only by the single VM/host thread, never by SignalHandler.
+static ProfilerSession *gCpuOwner = NULL;
+static CallStack gCpuSnapshot = {};
+static void drain_cpu_ticks();
+static void forget_cpu_owner(ProfilerSession *s);
+
 #endif
 
 // Global defaults (overridable via env / Lua API before start)
@@ -332,22 +343,49 @@ static int session_anchor_gc(lua_State *L) {
 }
 
 static void ensure_session_anchor(lua_State *L) {
+    // A registry is shared by coroutines; one anchor per registry would leak
+    // every session except the first. Keep each enrolled thread alive until
+    // explicit close/stop, or until lua_close finalizes all anchors.
     lua_getfield(L, LUA_REGISTRYINDEX, kSessionAnchorKey);
-    if (!lua_isnil(L, -1)) {
+    if (lua_isnil(L, -1)) {
         lua_pop(L, 1);
-        return;
+        lua_newtable(L);
+        lua_pushvalue(L, -1);
+        lua_setfield(L, LUA_REGISTRYINDEX, kSessionAnchorKey);
     }
-    lua_pop(L, 1);
-
+    lua_pushlightuserdata(L, L);
+    lua_newtable(L);
     SessionAnchor *a = (SessionAnchor *)lua_newuserdata(L, sizeof(SessionAnchor));
     a->owner = L;
-
-    if (luaL_newmetatable(L, "plua.session_anchor")) {
+    if (luaL_newmetatable(L, "plua.session_anchor_mt")) {
         lua_pushcfunction(L, session_anchor_gc);
         lua_setfield(L, -2, "__gc");
     }
     lua_setmetatable(L, -2);
-    lua_setfield(L, LUA_REGISTRYINDEX, kSessionAnchorKey);
+    lua_setfield(L, -2, "anchor");
+    lua_pushthread(L);
+    lua_setfield(L, -2, "thread");
+    lua_rawset(L, -3);
+    lua_pop(L, 1);
+}
+
+static void detach_session_anchor(lua_State *L) {
+    lua_getfield(L, LUA_REGISTRYINDEX, kSessionAnchorKey);
+    if (lua_istable(L, -1)) {
+        lua_pushlightuserdata(L, L);
+        lua_rawget(L, -2);
+        if (lua_istable(L, -1)) {
+            lua_getfield(L, -1, "anchor");
+            SessionAnchor *a = (SessionAnchor *)lua_touserdata(L, -1);
+            if (a) a->owner = NULL; // an old finalizer must not destroy a restarted session
+            lua_pop(L, 1);
+        }
+        lua_pop(L, 1);
+        lua_pushlightuserdata(L, L);
+        lua_pushnil(L);
+        lua_rawset(L, -3);
+    }
+    lua_pop(L, 1);
 }
 
 // Tear down profiling resources and remove session from gSessions.
@@ -355,6 +393,10 @@ static void destroy_session(ProfilerSession *s) {
     if (!s) return;
     lua_State *L = s->L;
 
+#if defined(PLUA_HAS_POSIX_PROF)
+    drain_cpu_ticks();
+    forget_cpu_owner(s);
+#endif
     s->pendingCpuSample.store(false, std::memory_order_relaxed);
     s->pendingMemSample.store(false, std::memory_order_relaxed);
 
@@ -397,6 +439,7 @@ static void destroy_session(ProfilerSession *s) {
 
     if (L) {
         gSessions.erase(L);
+        detach_session_anchor(L);
     }
     s->L = NULL;
     delete s;
@@ -453,14 +496,14 @@ static bool write_pro_header(int fd) {
 // frames with CIST_LUA), skip pure C frames and record Lua/main frames so a
 // sample that lands while a C API / C callback is active still attributes to
 // the nearest/top Lua caller (source/name/line via lua_getinfo).
-static void get_cur_callstack(ProfilerSession *s, CallStack &cs) {
+static void get_cur_callstack(ProfilerSession *s, CallStack &cs, bool returning = false) {
     lua_State *L = s->L;
     lua_Debug ar;
     int last = lastlevel(L);
     int i = 0;
     cs.depth = 0;
 
-    while (lua_getstack(L, last, &ar) && i < MAX_STACK_SIZE) {
+    while (last >= (returning ? 1 : 0) && lua_getstack(L, last, &ar) && i < MAX_STACK_SIZE) {
         lua_getinfo(L, "Slnt", &ar);
         i++;
         last--;
@@ -514,6 +557,7 @@ static bool flush_string_table(ProfilerSession *s, int fd) {
 static void flush_cpu(ProfilerSession *s) {
     if (s->cpuData.total <= 0) {
         if (s->cpuData.fd >= 0) {
+            flush_string_table(s, s->cpuData.fd);
             close(s->cpuData.fd);
             s->cpuData.fd = -1;
         }
@@ -616,7 +660,7 @@ static void take_cpu_sample(ProfilerSession *s) {
     if (s->cpuSampleLimit != 0 && s->cpuSampleLimit <= s->cpuData.total) {
         return;
     }
-    CallStack cs;
+    CallStack cs = {};
     get_cur_callstack(s, cs);
     // No Lua frame recoverable (e.g. pure C with empty debug stack) — drop.
     if (cs.depth <= 0) return;
@@ -624,12 +668,45 @@ static void take_cpu_sample(ProfilerSession *s) {
     s->cpuData.total++;
 }
 
+#if defined(PLUA_HAS_POSIX_PROF)
+static void drain_cpu_ticks() {
+    unsigned ticks = gCpuTicks.exchange(0, std::memory_order_relaxed);
+    ProfilerSession *s = gCpuOwner;
+    if (!ticks || !s || !s->cpuRunning || !s->useSigprof || gCpuSnapshot.depth == 0) return;
+    // A weighted sample for EVERY delivered signal, not one boolean per hook.
+    unsigned room = (unsigned)(INT_MAX - s->cpuData.total);
+    if (s->cpuSampleLimit > 0)
+        room = std::min(room, (unsigned)std::max(0, s->cpuSampleLimit - s->cpuData.total));
+    ticks = std::min(ticks, room);
+    if (ticks) {
+        s->cpuData.callstack[gCpuSnapshot] += (int)ticks;
+        s->cpuData.total += (int)ticks;
+    }
+}
+
+static void forget_cpu_owner(ProfilerSession *s) {
+    if (gCpuOwner == s) {
+        gCpuOwner = NULL;
+        gCpuSnapshot.depth = 0;
+    }
+}
+
+static void snapshot_cpu_owner(ProfilerSession *s, bool returning) {
+    gCpuOwner = NULL;
+    gCpuSnapshot = {};
+    if (s && s->cpuRunning && s->useSigprof) {
+        get_cur_callstack(s, gCpuSnapshot, returning);
+        if (gCpuSnapshot.depth) gCpuOwner = s;
+    }
+}
+#endif
+
 static void take_mem_sample(ProfilerSession *s) {
     s->memData.is_in_hook++;
     auto hook_alloc_ptr = s->memData.hook_alloc_ptr;
     auto hook_alloc_sz = s->memData.hook_alloc_sz;
 
-    CallStack cs;
+    CallStack cs = {};
     get_cur_callstack(s, cs);
     if (cs.depth <= 0) {
         s->memData.is_in_hook--;
@@ -654,8 +731,20 @@ static void take_mem_sample(ProfilerSession *s) {
 
 static void SessionHook(lua_State *L, lua_Debug *par) {
     (void)par;
+#if defined(PLUA_HAS_POSIX_PROF)
+    drain_cpu_ticks(); // charge the OLD snapshot before changing frames/owner
+#endif
     ProfilerSession *s = get_session(L, false);
     if (!s || s->L != L) {
+#if defined(PLUA_HAS_POSIX_PROF)
+        snapshot_cpu_owner(NULL, false); // inherited coroutine hook: not enrolled
+        if (gPosixTimerUsers > 0) {
+            // Keep inherited boundary hooks: removing them would silently bill
+            // the parent on the coroutine's SECOND resume.
+            lua_sethook(L, SessionHook, LUA_MASKCALL | LUA_MASKRET | LUA_MASKCOUNT, DEFAULT_CPU_HOOK_COUNT);
+            return;
+        }
+#endif
         lua_sethook(L, 0, 0, 0);
         return;
     }
@@ -663,8 +752,8 @@ static void SessionHook(lua_State *L, lua_Debug *par) {
     bool didCpu = s->pendingCpuSample.exchange(false, std::memory_order_relaxed);
     bool didMem = s->pendingMemSample.exchange(false, std::memory_order_relaxed);
 
-    if (didCpu) {
-        if (s->cpuRunning && (s->cpuSampleLimit == 0 || s->cpuSampleLimit > s->cpuData.total)) {
+    if (didCpu || (s->cpuRunning && s->useSigprof)) {
+        if (didCpu && !s->useSigprof && s->cpuRunning && (s->cpuSampleLimit == 0 || s->cpuSampleLimit > s->cpuData.total)) {
             take_cpu_sample(s);
         }
         if (s->cpuRunning && s->cpuSampleLimit != 0 && s->cpuSampleLimit <= s->cpuData.total) {
@@ -681,6 +770,10 @@ static void SessionHook(lua_State *L, lua_Debug *par) {
                 }
             }
 #endif
+            s->useSigprof = false;
+#if defined(PLUA_HAS_POSIX_PROF)
+            forget_cpu_owner(s);
+#endif
             flush_cpu(s);
             if (!s->memRunning) {
                 clear_string_tables(s);
@@ -693,27 +786,26 @@ static void SessionHook(lua_State *L, lua_Debug *par) {
         take_mem_sample(s);
     }
 
+#if defined(PLUA_HAS_POSIX_PROF)
+    snapshot_cpu_owner(s, par->event == LUA_HOOKRET);
+#endif
     rearm_session_hook(s);
 }
 
 static void rearm_session_hook(ProfilerSession *s) {
     if (!s || !s->L) return;
-    if (s->pendingCpuSample.load(std::memory_order_relaxed) ||
-        s->pendingMemSample.load(std::memory_order_relaxed)) {
-        lua_sethook(s->L, SessionHook, LUA_MASKCOUNT, 1);
+    const int boundaryMask = (s->cpuRunning && s->useSigprof) ? LUA_MASKCALL | LUA_MASKRET : 0;
+    if (s->pendingMemSample.load(std::memory_order_relaxed)) {
+        lua_sethook(s->L, SessionHook, LUA_MASKCOUNT | boundaryMask, 1);
         return;
     }
-    // Count-backend continuous sampling: every N VM instructions becomes one sample.
     if (s->cpuRunning && !s->useSigprof) {
         s->pendingCpuSample.store(true, std::memory_order_relaxed);
         lua_sethook(s->L, SessionHook, LUA_MASKCOUNT, s->cpuHookCount);
         return;
     }
-    // SIGPROF backend: keep a drain hook armed. Signal only sets pendingCpuSample;
-    // actual sampling happens here (never lua_sethook from the signal handler).
     if (s->cpuRunning && s->useSigprof) {
-        int step = s->cpuHookCount > 0 ? s->cpuHookCount : DEFAULT_CPU_HOOK_COUNT;
-        lua_sethook(s->L, SessionHook, LUA_MASKCOUNT, step);
+        lua_sethook(s->L, SessionHook, LUA_MASKCOUNT | boundaryMask, s->cpuHookCount);
         return;
     }
     lua_sethook(s->L, 0, 0, 0);
@@ -724,21 +816,14 @@ static void request_hook(ProfilerSession *s, bool cpu, bool mem) {
     if (cpu) s->pendingCpuSample.store(true, std::memory_order_relaxed);
     if (mem) s->pendingMemSample.store(true, std::memory_order_relaxed);
     if (s->L) {
-        lua_sethook(s->L, SessionHook, LUA_MASKCOUNT, 1);
+        lua_sethook(s->L, SessionHook, LUA_MASKCOUNT | ((s->cpuRunning && s->useSigprof) ? LUA_MASKCALL | LUA_MASKRET : 0), 1);
     }
 }
 
 #if defined(PLUA_HAS_POSIX_PROF)
 static void SignalHandler(int sig, siginfo_t *sinfo, void *ucontext) {
     (void)sig; (void)sinfo; (void)ucontext;
-    // Async-signal-safe path: only mark sample pending. Do NOT call lua_sethook
-    // or any Lua / allocator / non-AS-safe API here (historical crash risk #8).
-    for (auto &kv : gSessions) {
-        ProfilerSession *s = kv.second;
-        if (s && s->L && s->cpuRunning && s->useSigprof) {
-            s->pendingCpuSample.store(true, std::memory_order_relaxed);
-        }
-    }
+    gCpuTicks.fetch_add(1, std::memory_order_relaxed);
 }
 
 static int ensure_sigprof_handler() {
@@ -757,11 +842,14 @@ static int ensure_sigprof_handler() {
 }
 
 static int start_posix_timer(ProfilerSession *s) {
+    if (gPosixTimerUsers && gPosixIntervalMs != s->cpuIntervalMs) return -1;
     if (ensure_sigprof_handler() != 0) return -1;
     if (gPosixTimerUsers == 0) {
+        gCpuTicks.store(0, std::memory_order_relaxed);
+        gPosixIntervalMs = s->cpuIntervalMs;
         struct itimerval timer;
-        timer.it_interval.tv_sec = 0;
-        timer.it_interval.tv_usec = s->cpuIntervalMs * 1000;
+        timer.it_interval.tv_sec = s->cpuIntervalMs / 1000;
+        timer.it_interval.tv_usec = (s->cpuIntervalMs % 1000) * 1000;
         timer.it_value = timer.it_interval;
         int ret = setitimer(ITIMER_PROF, &timer, NULL);
         if (ret != 0) {
@@ -788,8 +876,9 @@ static void stop_posix_timer(ProfilerSession *s) {
 static int start_cpu_backend(ProfilerSession *s) {
 #if defined(PLUA_HAS_POSIX_PROF)
     if (!gForceCountBackend) {
-        s->useSigprof = true;
-        return start_posix_timer(s);
+        int result = start_posix_timer(s);
+        s->useSigprof = (result == 0);
+        return result;
     }
 #endif
     s->useSigprof = false;
@@ -803,6 +892,8 @@ static void stop_cpu_backend(ProfilerSession *s) {
     if (s->useSigprof) {
         stop_posix_timer(s);
     }
+    drain_cpu_ticks();
+    forget_cpu_owner(s);
 #endif
     s->useSigprof = false;
     // Only clear hook if mem is not pending work; rearm handles it
@@ -814,11 +905,11 @@ static int lrealstopsafe(lua_State *L) {
     if (!s) {
         return 0;
     }
-    // lrealstop may have cleared cpuRunning already (async stop / sample limit); still tear down.
+    // A sample limit may have cleared cpuRunning; still tear down open resources.
     bool was_running = s->cpuRunning || s->cpuData.fd >= 0 || s->cpuData.total > 0 || s->useSigprof;
     if (was_running) {
-        s->cpuRunning = false;
         stop_cpu_backend(s);
+        s->cpuRunning = false;
         flush_cpu(s);
         if (!s->memRunning) {
             clear_string_tables(s);
@@ -831,9 +922,10 @@ static int lrealstopsafe(lua_State *L) {
 }
 
 extern "C" int lrealstop(lua_State *L) {
-    ProfilerSession *s = get_session(L, false);
-    if (s) s->cpuRunning = false;
-    return 0;
+    // Must be called on the VM thread in a safe context (not a signal handler).
+    // Stop the timer before the final drain; retain pending C ticks even when
+    // the caller stops directly from C without another Lua hook.
+    return lrealstopsafe(L);
 }
 
 static int lrealstartsafe(lua_State *L) {
@@ -853,16 +945,20 @@ static int lrealstartsafe(lua_State *L) {
         LERR("open file fail %s", s->cpuFilename.c_str());
         return -1;
     }
-    if (!write_pro_header(fd)) {
-        close(fd);
-        LERR("write header fail %s", s->cpuFilename.c_str());
-        return -1;
-    }
     s->cpuData.fd = fd;
     s->cpuData.total = 0;
     s->cpuData.callstack.clear();
 
     if (start_cpu_backend(s) != 0) {
+        close(fd);
+        s->cpuData.fd = -1;
+        return -1;
+    }
+    // CPU v2: kind=1, backend=1(SIGPROF)/2(count), interval ms, VM hook step.
+    uint32_t header[] = {PLUA_PRO_MAGIC, 2, 1, s->useSigprof ? 1u : 2u,
+                         (uint32_t)s->cpuIntervalMs, (uint32_t)s->cpuHookCount};
+    if (!flush_file(fd, (const char *)header, sizeof(header))) {
+        stop_cpu_backend(s);
         close(fd);
         s->cpuData.fd = -1;
         return -1;
@@ -875,6 +971,10 @@ static void StartHandlerHook(lua_State *L, lua_Debug *par) {
     (void)par;
     lrealstartsafe(L);
     ProfilerSession *s = get_session(L, false);
+#if defined(PLUA_HAS_POSIX_PROF)
+    drain_cpu_ticks();
+    snapshot_cpu_owner(s, false);
+#endif
     rearm_session_hook(s);
 }
 
@@ -919,9 +1019,21 @@ static int lstart(lua_State *L) {
         return 2;
     }
     int ret = lrealstart(L, second, file);
+    if (ret == 0) {
+        // Lua API can start synchronously, so backend/file failures are visible
+        // to the caller. The exported injection API still arms a start hook.
+        ret = lrealstartsafe(L);
+        ProfilerSession *s = get_session(L, false);
+#if defined(PLUA_HAS_POSIX_PROF)
+        drain_cpu_ticks();
+        snapshot_cpu_owner(s, false);
+#endif
+        rearm_session_hook(s);
+        if (ret != 0) release_session_if_idle(s);
+    }
     lua_pushinteger(L, ret);
     if (ret != 0) {
-        lua_pushstring(L, "cpu start failed: could not start profiler (file or backend error)");
+        lua_pushstring(L, "cpu start failed: file/backend error or conflicting SIGPROF interval");
         return 2;
     }
     return 1;
@@ -931,7 +1043,6 @@ static int lstop(lua_State *L) {
     ProfilerSession *s = get_session(L, false);
     LLOG("lstop %s", s ? s->cpuFilename.c_str() : "");
     int ret = lrealstop(L);
-    lrealstopsafe(L);
     lua_pushinteger(L, ret);
     return 1;
 }
@@ -1247,7 +1358,6 @@ static int lclose(lua_State *L) {
     }
     if (s->cpuRunning || s->cpuData.fd >= 0 || s->cpuData.total > 0) {
         lrealstop(L);
-        lrealstopsafe(L);
         s = get_session(L, false);
     }
     if (s && (s->memRunning || s->memData.oldAlloc ||
